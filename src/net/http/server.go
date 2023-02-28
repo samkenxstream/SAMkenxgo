@@ -567,12 +567,16 @@ type writerOnly struct {
 // to a *net.TCPConn with sendfile, or from a supported src type such
 // as a *net.TCPConn on Linux with splice.
 func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
+	bufp := copyBufPool.Get().(*[]byte)
+	buf := *bufp
+	defer copyBufPool.Put(bufp)
+
 	// Our underlying w.conn.rwc is usually a *TCPConn (with its
 	// own ReadFrom method). If not, just fall back to the normal
 	// copy method.
 	rf, ok := w.conn.rwc.(io.ReaderFrom)
 	if !ok {
-		return io.Copy(writerOnly{w}, src)
+		return io.CopyBuffer(writerOnly{w}, src, buf)
 	}
 
 	// Copy the first sniffLen bytes before switching to ReadFrom.
@@ -580,7 +584,7 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 	// source is available (see golang.org/issue/5660) and provides
 	// enough bytes to perform Content-Type sniffing when required.
 	if !w.cw.wroteHeader {
-		n0, err := io.Copy(writerOnly{w}, io.LimitReader(src, sniffLen))
+		n0, err := io.CopyBuffer(writerOnly{w}, io.LimitReader(src, sniffLen), buf)
 		n += n0
 		if err != nil || n0 < sniffLen {
 			return n, err
@@ -598,7 +602,7 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 		return n, err
 	}
 
-	n0, err := io.Copy(writerOnly{w}, src)
+	n0, err := io.CopyBuffer(writerOnly{w}, src, buf)
 	n += n0
 	return n, err
 }
@@ -794,6 +798,13 @@ var (
 	bufioWriter2kPool sync.Pool
 	bufioWriter4kPool sync.Pool
 )
+
+var copyBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
 
 func bufioWriterPool(size int) *sync.Pool {
 	switch size {
@@ -1738,7 +1749,7 @@ type closeWriter interface {
 
 var _ closeWriter = (*net.TCPConn)(nil)
 
-// closeWrite flushes any outstanding data and sends a FIN packet (if
+// closeWriteAndWait flushes any outstanding data and sends a FIN packet (if
 // client is connected via TCP), signaling that we're done. We then
 // pause for a bit, hoping the client processes it before any
 // subsequent RST.
@@ -2910,22 +2921,8 @@ func (sh serverHandler) ServeHTTP(rw ResponseWriter, req *Request) {
 		handler = globalOptionsHandler{}
 	}
 
-	if req.URL != nil && strings.Contains(req.URL.RawQuery, ";") {
-		var allowQuerySemicolonsInUse atomic.Bool
-		req = req.WithContext(context.WithValue(req.Context(), silenceSemWarnContextKey, func() {
-			allowQuerySemicolonsInUse.Store(true)
-		}))
-		defer func() {
-			if !allowQuerySemicolonsInUse.Load() {
-				sh.srv.logf("http: URL query contains semicolon, which is no longer a supported separator; parts of the query may be stripped when parsed; see golang.org/issue/25192")
-			}
-		}()
-	}
-
 	handler.ServeHTTP(rw, req)
 }
-
-var silenceSemWarnContextKey = &contextKey{"silence-semicolons"}
 
 // AllowQuerySemicolons returns a handler that serves requests by converting any
 // unescaped semicolons in the URL query to ampersands, and invoking the handler h.
@@ -2938,9 +2935,6 @@ var silenceSemWarnContextKey = &contextKey{"silence-semicolons"}
 // AllowQuerySemicolons should be invoked before Request.ParseForm is called.
 func AllowQuerySemicolons(h Handler) Handler {
 	return HandlerFunc(func(w ResponseWriter, r *Request) {
-		if silenceSemicolonsWarning, ok := r.Context().Value(silenceSemWarnContextKey).(func()); ok {
-			silenceSemicolonsWarning()
-		}
 		if strings.Contains(r.URL.RawQuery, ";") {
 			r2 := new(Request)
 			*r2 = *r
@@ -2979,7 +2973,7 @@ func (srv *Server) ListenAndServe() error {
 
 var testHookServerServe func(*Server, net.Listener) // used if non-nil
 
-// shouldDoServeHTTP2 reports whether Server.Serve should configure
+// shouldConfigureHTTP2ForServe reports whether Server.Serve should configure
 // automatic HTTP/2. (which sets up the srv.TLSNextProto map)
 func (srv *Server) shouldConfigureHTTP2ForServe() bool {
 	if srv.TLSConfig == nil {

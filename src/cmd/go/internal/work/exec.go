@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/token"
 	"internal/coverage"
 	"internal/lazyregexp"
 	"io"
@@ -39,6 +40,7 @@ import (
 	"cmd/go/internal/slices"
 	"cmd/go/internal/str"
 	"cmd/go/internal/trace"
+	"cmd/internal/buildid"
 	"cmd/internal/quoted"
 	"cmd/internal/sys"
 )
@@ -526,6 +528,10 @@ func (b *Builder) build(ctx context.Context, a *Action) (err error) {
 		return errors.New("binary-only packages are no longer supported")
 	}
 
+	if err := b.checkDirectives(a); err != nil {
+		return err
+	}
+
 	if err := b.Mkdir(a.Objdir); err != nil {
 		return err
 	}
@@ -952,6 +958,37 @@ OverlayLoop:
 	}
 
 	a.built = objpkg
+	return nil
+}
+
+func (b *Builder) checkDirectives(a *Action) error {
+	var msg *bytes.Buffer
+	p := a.Package
+	var seen map[string]token.Position
+	for _, d := range p.Internal.Build.Directives {
+		if strings.HasPrefix(d.Text, "//go:debug") {
+			key, _, err := load.ParseGoDebug(d.Text)
+			if err != nil && err != load.ErrNotGoDebug {
+				if msg == nil {
+					msg = new(bytes.Buffer)
+				}
+				fmt.Fprintf(msg, "%s: invalid //go:debug: %v\n", d.Pos, err)
+				continue
+			}
+			if pos, ok := seen[key]; ok {
+				fmt.Fprintf(msg, "%s: repeated //go:debug for %v\n\t%s: previous //go:debug\n", d.Pos, key, pos)
+				continue
+			}
+			if seen == nil {
+				seen = make(map[string]token.Position)
+			}
+			seen[key] = d.Pos
+		}
+	}
+	if msg != nil {
+		return formatOutput(b.WorkDir, p.Dir, p.ImportPath, p.Desc(), b.processOutput(msg.Bytes()))
+
+	}
 	return nil
 }
 
@@ -1446,64 +1483,110 @@ func (b *Builder) PkgconfigCmd() string {
 	return envList("PKG_CONFIG", cfg.DefaultPkgConfig)[0]
 }
 
-// splitPkgConfigOutput parses the pkg-config output into a slice of
-// flags. This implements the algorithm from pkgconf/libpkgconf/argvsplit.c.
+// splitPkgConfigOutput parses the pkg-config output into a slice of flags.
+// This implements the shell quoting semantics described in
+// https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_02,
+// except that it does not support parameter or arithmetic expansion or command
+// substitution and hard-codes the <blank> delimiters instead of reading them
+// from LC_LOCALE.
 func splitPkgConfigOutput(out []byte) ([]string, error) {
 	if len(out) == 0 {
 		return nil, nil
 	}
 	var flags []string
 	flag := make([]byte, 0, len(out))
-	escaped := false
-	quote := byte(0)
+	didQuote := false // was the current flag parsed from a quoted string?
+	escaped := false  // did we just read `\` in a non-single-quoted context?
+	quote := byte(0)  // what is the quote character around the current string?
 
 	for _, c := range out {
 		if escaped {
-			if quote != 0 {
+			if quote == '"' {
+				// “The <backslash> shall retain its special meaning as an escape
+				// character … only when followed by one of the following characters
+				// when considered special:”
 				switch c {
-				case '$', '`', '"', '\\':
+				case '$', '`', '"', '\\', '\n':
+					// Handle the escaped character normally.
 				default:
-					flag = append(flag, '\\')
+					// Not an escape character after all.
+					flag = append(flag, '\\', c)
+					escaped = false
+					continue
 				}
-				flag = append(flag, c)
+			}
+
+			if c == '\n' {
+				// “If a <newline> follows the <backslash>, the shell shall interpret
+				// this as line continuation.”
 			} else {
 				flag = append(flag, c)
 			}
 			escaped = false
-		} else if quote != 0 {
-			if c == quote {
-				quote = 0
-			} else {
-				switch c {
-				case '\\':
-					escaped = true
-				default:
-					flag = append(flag, c)
-				}
-			}
-		} else if strings.IndexByte(" \t\n\v\f\r", c) < 0 {
+			continue
+		}
+
+		if quote != 0 && c == quote {
+			quote = 0
+			continue
+		}
+		switch quote {
+		case '\'':
+			// “preserve the literal value of each character”
+			flag = append(flag, c)
+			continue
+		case '"':
+			// “preserve the literal value of all characters within the double-quotes,
+			// with the exception of …”
 			switch c {
-			case '\\':
-				escaped = true
-			case '\'', '"':
-				quote = c
+			case '`', '$', '\\':
 			default:
 				flag = append(flag, c)
+				continue
 			}
-		} else if len(flag) != 0 {
-			flags = append(flags, string(flag))
-			flag = flag[:0]
 		}
-	}
-	if escaped {
-		return nil, errors.New("broken character escaping in pkgconf output ")
-	}
-	if quote != 0 {
-		return nil, errors.New("unterminated quoted string in pkgconf output ")
-	} else if len(flag) != 0 {
-		flags = append(flags, string(flag))
+
+		// “The application shall quote the following characters if they are to
+		// represent themselves:”
+		switch c {
+		case '|', '&', ';', '<', '>', '(', ')', '$', '`':
+			return nil, fmt.Errorf("unexpected shell character %q in pkgconf output", c)
+
+		case '\\':
+			// “A <backslash> that is not quoted shall preserve the literal value of
+			// the following character, with the exception of a <newline>.”
+			escaped = true
+			continue
+
+		case '"', '\'':
+			quote = c
+			didQuote = true
+			continue
+
+		case ' ', '\t', '\n':
+			if len(flag) > 0 || didQuote {
+				flags = append(flags, string(flag))
+			}
+			flag, didQuote = flag[:0], false
+			continue
+		}
+
+		flag = append(flag, c)
 	}
 
+	// Prefer to report a missing quote instead of a missing escape. If the string
+	// is something like `"foo\`, it's ambiguous as to whether the trailing
+	// backslash is really an escape at all.
+	if quote != 0 {
+		return nil, errors.New("unterminated quoted string in pkgconf output")
+	}
+	if escaped {
+		return nil, errors.New("broken character escaping in pkgconf output")
+	}
+
+	if len(flag) > 0 || didQuote {
+		flags = append(flags, string(flag))
+	}
 	return flags, nil
 }
 
@@ -1535,7 +1618,7 @@ func (b *Builder) getPkgConfigFlags(p *load.Package) (cflags, ldflags []string, 
 			return nil, nil, err
 		}
 		if len(out) > 0 {
-			cflags, err = splitPkgConfigOutput(out)
+			cflags, err = splitPkgConfigOutput(bytes.TrimSpace(out))
 			if err != nil {
 				return nil, nil, err
 			}
@@ -1549,9 +1632,12 @@ func (b *Builder) getPkgConfigFlags(p *load.Package) (cflags, ldflags []string, 
 			return nil, nil, err
 		}
 		if len(out) > 0 {
-			// NOTE: we don't attempt to parse quotes and unescapes here. pkg-config
-			// is typically used within shell backticks, which treats quotes literally.
-			ldflags = strings.Fields(string(out))
+			// We need to handle path with spaces so that C:/Program\ Files can pass
+			// checkLinkerFlags. Use splitPkgConfigOutput here just like we treat cflags.
+			ldflags, err = splitPkgConfigOutput(out)
+			if err != nil {
+				return nil, nil, err
+			}
 			if err := checkLinkerFlags("LDFLAGS", "pkg-config --libs", ldflags); err != nil {
 				return nil, nil, err
 			}
@@ -2493,6 +2579,12 @@ func (b *Builder) ccompile(a *Action, p *load.Package, outfile string, flags []s
 			}
 			flags = append(slices.Clip(flags), "-fdebug-prefix-map="+from+"="+to)
 		}
+	}
+
+	// Tell gcc to not insert truly random numbers into the build process
+	// this ensures LTO won't create random numbers for symbols.
+	if b.gccSupportsFlag(compiler, "-frandom-seed=1") {
+		flags = append(flags, "-frandom-seed="+buildid.HashToString(a.actionID))
 	}
 
 	overlayPath := file

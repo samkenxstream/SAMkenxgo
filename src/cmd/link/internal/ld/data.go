@@ -84,6 +84,9 @@ func maxSizeTrampolines(ctxt *Link, ldr *loader.Loader, s loader.Sym, isTramp bo
 		}
 	}
 
+	if ctxt.IsARM() {
+		return n * 20 // Trampolines in ARM range from 3 to 5 instructions.
+	}
 	if ctxt.IsPPC64() {
 		return n * 16 // Trampolines in PPC64 are 4 instructions.
 	}

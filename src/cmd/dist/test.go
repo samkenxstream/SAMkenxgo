@@ -18,7 +18,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -594,6 +593,12 @@ func (t *tester) registerRaceBenchTest(pkg string) {
 }
 
 func (t *tester) registerTests() {
+	// registerStdTestSpecially tracks import paths in the standard library
+	// whose test registration happens in a special way.
+	registerStdTestSpecially := map[string]bool{
+		"internal/testdir": true, // Registered at the bottom with sharding.
+	}
+
 	// Fast path to avoid the ~1 second of `go list std cmd` when
 	// the caller lists specific tests to run. (as the continuous
 	// build coordinator does).
@@ -621,10 +626,16 @@ func (t *tester) registerTests() {
 		}
 		pkgs := strings.Fields(string(all))
 		for _, pkg := range pkgs {
+			if registerStdTestSpecially[pkg] {
+				continue
+			}
 			t.registerStdTest(pkg)
 		}
 		if t.race {
 			for _, pkg := range pkgs {
+				if registerStdTestSpecially[pkg] {
+					continue
+				}
 				if t.packageHasBenchmarks(pkg) {
 					t.registerRaceBenchTest(pkg)
 				}
@@ -907,12 +918,15 @@ func (t *tester) registerTests() {
 			nShards = n
 		}
 		for shard := 0; shard < nShards; shard++ {
-			shard := shard
-			t.tests = append(t.tests, distTest{
-				name:    fmt.Sprintf("test:%d_%d", shard, nShards),
-				heading: "../test",
-				fn:      func(dt *distTest) error { return t.testDirTest(dt, shard, nShards) },
-			})
+			t.registerTest(
+				fmt.Sprintf("test:%d_%d", shard, nShards),
+				"../test",
+				&goTest{
+					dir:       "internal/testdir",
+					testFlags: []string{fmt.Sprintf("-shard=%d", shard), fmt.Sprintf("-shards=%d", nShards)},
+				},
+				rtHostTest{},
+			)
 		}
 	}
 	// Only run the API check on fast development platforms.
@@ -1136,79 +1150,14 @@ func (t *tester) internalLinkPIE() bool {
 
 // supportedBuildMode reports whether the given build mode is supported.
 func (t *tester) supportedBuildmode(mode string) bool {
-	pair := goos + "-" + goarch
 	switch mode {
-	case "c-archive":
-		if !t.extLink() {
-			return false
-		}
-		switch goos {
-		case "aix", "darwin", "ios", "windows":
-			return true
-		case "linux":
-			switch goarch {
-			case "386", "amd64", "arm", "armbe", "arm64", "arm64be", "ppc64", "ppc64le", "riscv64", "s390x":
-				return true
-			default:
-				// Other targets do not support -shared,
-				// per ParseFlags in
-				// cmd/compile/internal/base/flag.go.
-				// For c-archive the Go tool passes -shared,
-				// so that the result is suitable for inclusion
-				// in a PIE or shared library.
-				return false
-			}
-		case "freebsd":
-			return goarch == "amd64"
-		}
-		return false
-	case "c-shared":
-		switch pair {
-		case "linux-386", "linux-amd64", "linux-arm", "linux-arm64", "linux-ppc64le", "linux-riscv64", "linux-s390x",
-			"darwin-amd64", "darwin-arm64",
-			"freebsd-amd64",
-			"android-arm", "android-arm64", "android-386", "android-amd64",
-			"windows-amd64", "windows-386", "windows-arm64":
-			return true
-		}
-		return false
-	case "shared":
-		switch pair {
-		case "linux-386", "linux-amd64", "linux-arm", "linux-arm64", "linux-ppc64le", "linux-s390x":
-			return true
-		}
-		return false
-	case "plugin":
-		switch pair {
-		case "linux-386", "linux-amd64", "linux-arm", "linux-arm64", "linux-s390x", "linux-ppc64le":
-			return true
-		case "android-386", "android-amd64":
-			return true
-		case "darwin-amd64", "darwin-arm64":
-			return true
-		case "freebsd-amd64":
-			return true
-		}
-		return false
-	case "pie":
-		switch pair {
-		case "aix-ppc64",
-			"linux-386", "linux-amd64", "linux-arm", "linux-arm64", "linux-ppc64le", "linux-riscv64", "linux-s390x",
-			"android-amd64", "android-arm", "android-arm64", "android-386":
-			return true
-		case "darwin-amd64", "darwin-arm64", "ios-amd64", "ios-arm64":
-			return true
-		case "windows-amd64", "windows-386", "windows-arm", "windows-arm64":
-			return true
-		case "freebsd-amd64":
-			return true
-		}
-		return false
-
+	case "c-archive", "c-shared", "shared", "plugin", "pie":
 	default:
 		fatalf("internal error: unknown buildmode %s", mode)
 		return false
 	}
+
+	return buildModeSupported("gc", mode, goos, goarch)
 }
 
 func (t *tester) registerCgoTests() {
@@ -1568,13 +1517,6 @@ func (t *tester) registerRaceTests() {
 		// t.registerTest("race:misc/cgo/test", hdr, &goTest{dir: "../misc/cgo/test", race: true, env: []string{"GOTRACEBACK=2"}})
 	}
 	if t.extLink() {
-		var oldWindows rtPreFunc
-		if strings.HasPrefix(os.Getenv("GO_BUILDER_NAME"), "windows-amd64-2008") {
-			oldWindows.pre = func(*distTest) bool {
-				fmt.Println("skipping -race with external linkage on older windows builder, see https://github.com/golang/go/issues/56904 for details")
-				return false
-			}
-		}
 		// Test with external linking; see issue 9133.
 		t.registerTest("race:external", hdr,
 			&goTest{
@@ -1582,46 +1524,8 @@ func (t *tester) registerRaceTests() {
 				ldflags:  "-linkmode=external",
 				runTests: "TestParse|TestEcho|TestStdinCloseRace",
 				pkgs:     []string{"flag", "os/exec"},
-			}, oldWindows)
+			})
 	}
-}
-
-var runtest struct {
-	sync.Once
-	exe string
-	err error
-}
-
-func (t *tester) testDirTest(dt *distTest, shard, shards int) error {
-	runtest.Do(func() {
-		f, err := os.CreateTemp("", "runtest-*.exe") // named exe for Windows, but harmless elsewhere
-		if err != nil {
-			runtest.err = err
-			return
-		}
-		f.Close()
-
-		runtest.exe = f.Name()
-		xatexit(func() {
-			os.Remove(runtest.exe)
-		})
-
-		cmd := t.dirCmd("test", gorootBinGo, "build", "-o", runtest.exe, "run.go")
-		setEnv(cmd, "GOOS", gohostos)
-		setEnv(cmd, "GOARCH", gohostarch)
-		runtest.err = cmd.Run()
-	})
-	if runtest.err != nil {
-		return runtest.err
-	}
-	if t.compileOnly {
-		return nil
-	}
-	t.addCmd(dt, "test", runtest.exe,
-		fmt.Sprintf("--shard=%d", shard),
-		fmt.Sprintf("--shards=%d", shards),
-	)
-	return nil
 }
 
 // cgoPackages is the standard packages that use cgo.
@@ -1739,6 +1643,96 @@ func raceDetectorSupported(goos, goarch string) bool {
 		return goarch == "amd64" || goarch == "arm64"
 	case "freebsd", "netbsd", "openbsd", "windows":
 		return goarch == "amd64"
+	default:
+		return false
+	}
+}
+
+// buildModeSupports is a copy of the function
+// internal/platform.BuildModeSupported, which can't be used here
+// because cmd/dist can not import internal packages during bootstrap.
+func buildModeSupported(compiler, buildmode, goos, goarch string) bool {
+	if compiler == "gccgo" {
+		return true
+	}
+
+	platform := goos + "/" + goarch
+
+	switch buildmode {
+	case "archive":
+		return true
+
+	case "c-archive":
+		switch goos {
+		case "aix", "darwin", "ios", "windows":
+			return true
+		case "linux":
+			switch goarch {
+			case "386", "amd64", "arm", "armbe", "arm64", "arm64be", "ppc64le", "riscv64", "s390x":
+				// linux/ppc64 not supported because it does
+				// not support external linking mode yet.
+				return true
+			default:
+				// Other targets do not support -shared,
+				// per ParseFlags in
+				// cmd/compile/internal/base/flag.go.
+				// For c-archive the Go tool passes -shared,
+				// so that the result is suitable for inclusion
+				// in a PIE or shared library.
+				return false
+			}
+		case "freebsd":
+			return goarch == "amd64"
+		}
+		return false
+
+	case "c-shared":
+		switch platform {
+		case "linux/amd64", "linux/arm", "linux/arm64", "linux/386", "linux/ppc64le", "linux/riscv64", "linux/s390x",
+			"android/amd64", "android/arm", "android/arm64", "android/386",
+			"freebsd/amd64",
+			"darwin/amd64", "darwin/arm64",
+			"windows/amd64", "windows/386", "windows/arm64":
+			return true
+		}
+		return false
+
+	case "default":
+		return true
+
+	case "exe":
+		return true
+
+	case "pie":
+		switch platform {
+		case "linux/386", "linux/amd64", "linux/arm", "linux/arm64", "linux/ppc64le", "linux/riscv64", "linux/s390x",
+			"android/amd64", "android/arm", "android/arm64", "android/386",
+			"freebsd/amd64",
+			"darwin/amd64", "darwin/arm64",
+			"ios/amd64", "ios/arm64",
+			"aix/ppc64",
+			"windows/386", "windows/amd64", "windows/arm", "windows/arm64":
+			return true
+		}
+		return false
+
+	case "shared":
+		switch platform {
+		case "linux/386", "linux/amd64", "linux/arm", "linux/arm64", "linux/ppc64le", "linux/s390x":
+			return true
+		}
+		return false
+
+	case "plugin":
+		switch platform {
+		case "linux/amd64", "linux/arm", "linux/arm64", "linux/386", "linux/s390x", "linux/ppc64le",
+			"android/amd64", "android/386",
+			"darwin/amd64", "darwin/arm64",
+			"freebsd/amd64":
+			return true
+		}
+		return false
+
 	default:
 		return false
 	}

@@ -27,7 +27,6 @@ import (
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
-	"cmd/internal/obj/x86"
 	"cmd/internal/objabi"
 	"cmd/internal/src"
 	"cmd/internal/sys"
@@ -96,13 +95,22 @@ func InitConfig() {
 	ir.Syms.AssertE2I2 = typecheck.LookupRuntimeFunc("assertE2I2")
 	ir.Syms.AssertI2I = typecheck.LookupRuntimeFunc("assertI2I")
 	ir.Syms.AssertI2I2 = typecheck.LookupRuntimeFunc("assertI2I2")
+	ir.Syms.CgoCheckMemmove = typecheck.LookupRuntimeFunc("cgoCheckMemmove")
+	ir.Syms.CgoCheckPtrWrite = typecheck.LookupRuntimeFunc("cgoCheckPtrWrite")
 	ir.Syms.CheckPtrAlignment = typecheck.LookupRuntimeFunc("checkptrAlignment")
 	ir.Syms.Deferproc = typecheck.LookupRuntimeFunc("deferproc")
 	ir.Syms.DeferprocStack = typecheck.LookupRuntimeFunc("deferprocStack")
 	ir.Syms.Deferreturn = typecheck.LookupRuntimeFunc("deferreturn")
 	ir.Syms.Duffcopy = typecheck.LookupRuntimeFunc("duffcopy")
 	ir.Syms.Duffzero = typecheck.LookupRuntimeFunc("duffzero")
-	ir.Syms.GCWriteBarrier = typecheck.LookupRuntimeFunc("gcWriteBarrier")
+	ir.Syms.GCWriteBarrier[0] = typecheck.LookupRuntimeFunc("gcWriteBarrier1")
+	ir.Syms.GCWriteBarrier[1] = typecheck.LookupRuntimeFunc("gcWriteBarrier2")
+	ir.Syms.GCWriteBarrier[2] = typecheck.LookupRuntimeFunc("gcWriteBarrier3")
+	ir.Syms.GCWriteBarrier[3] = typecheck.LookupRuntimeFunc("gcWriteBarrier4")
+	ir.Syms.GCWriteBarrier[4] = typecheck.LookupRuntimeFunc("gcWriteBarrier5")
+	ir.Syms.GCWriteBarrier[5] = typecheck.LookupRuntimeFunc("gcWriteBarrier6")
+	ir.Syms.GCWriteBarrier[6] = typecheck.LookupRuntimeFunc("gcWriteBarrier7")
+	ir.Syms.GCWriteBarrier[7] = typecheck.LookupRuntimeFunc("gcWriteBarrier8")
 	ir.Syms.Goschedguarded = typecheck.LookupRuntimeFunc("goschedguarded")
 	ir.Syms.Growslice = typecheck.LookupRuntimeFunc("growslice")
 	ir.Syms.Memmove = typecheck.LookupRuntimeFunc("memmove")
@@ -123,31 +131,18 @@ func InitConfig() {
 	ir.Syms.Racereadrange = typecheck.LookupRuntimeFunc("racereadrange")
 	ir.Syms.Racewrite = typecheck.LookupRuntimeFunc("racewrite")
 	ir.Syms.Racewriterange = typecheck.LookupRuntimeFunc("racewriterange")
+	ir.Syms.WBZero = typecheck.LookupRuntimeFunc("wbZero")
+	ir.Syms.WBMove = typecheck.LookupRuntimeFunc("wbMove")
 	ir.Syms.X86HasPOPCNT = typecheck.LookupRuntimeVar("x86HasPOPCNT")       // bool
 	ir.Syms.X86HasSSE41 = typecheck.LookupRuntimeVar("x86HasSSE41")         // bool
 	ir.Syms.X86HasFMA = typecheck.LookupRuntimeVar("x86HasFMA")             // bool
 	ir.Syms.ARMHasVFPv4 = typecheck.LookupRuntimeVar("armHasVFPv4")         // bool
 	ir.Syms.ARM64HasATOMICS = typecheck.LookupRuntimeVar("arm64HasATOMICS") // bool
 	ir.Syms.Staticuint64s = typecheck.LookupRuntimeVar("staticuint64s")
-	ir.Syms.Typedmemclr = typecheck.LookupRuntimeFunc("typedmemclr")
 	ir.Syms.Typedmemmove = typecheck.LookupRuntimeFunc("typedmemmove")
 	ir.Syms.Udiv = typecheck.LookupRuntimeVar("udiv")                 // asm func with special ABI
 	ir.Syms.WriteBarrier = typecheck.LookupRuntimeVar("writeBarrier") // struct { bool; ... }
 	ir.Syms.Zerobase = typecheck.LookupRuntimeVar("zerobase")
-
-	// asm funcs with special ABI
-	if base.Ctxt.Arch.Name == "amd64" {
-		GCWriteBarrierReg = map[int16]*obj.LSym{
-			x86.REG_AX: typecheck.LookupRuntimeFunc("gcWriteBarrier"),
-			x86.REG_CX: typecheck.LookupRuntimeFunc("gcWriteBarrierCX"),
-			x86.REG_DX: typecheck.LookupRuntimeFunc("gcWriteBarrierDX"),
-			x86.REG_BX: typecheck.LookupRuntimeFunc("gcWriteBarrierBX"),
-			x86.REG_BP: typecheck.LookupRuntimeFunc("gcWriteBarrierBP"),
-			x86.REG_SI: typecheck.LookupRuntimeFunc("gcWriteBarrierSI"),
-			x86.REG_R8: typecheck.LookupRuntimeFunc("gcWriteBarrierR8"),
-			x86.REG_R9: typecheck.LookupRuntimeFunc("gcWriteBarrierR9"),
-		}
-	}
 
 	if Arch.LinkArch.Family == sys.Wasm {
 		BoundsCheckFunc[ssa.BoundsIndex] = typecheck.LookupRuntimeFunc("goPanicIndex")
@@ -7005,7 +7000,7 @@ func genssa(f *ssa.Func, pp *objw.Progs) {
 			case ssa.OpGetG:
 				// nothing to do when there's a g register,
 				// and checkLower complains if there's not
-			case ssa.OpVarDef, ssa.OpVarLive, ssa.OpKeepAlive:
+			case ssa.OpVarDef, ssa.OpVarLive, ssa.OpKeepAlive, ssa.OpWBend:
 				// nothing to do; already used by liveness
 			case ssa.OpPhi:
 				CheckLoweredPhi(v)
@@ -7759,7 +7754,7 @@ func (s *State) PrepareCall(v *ssa.Value) {
 	idx := s.livenessMap.Get(v)
 	if !idx.StackMapValid() {
 		// See Liveness.hasStackMap.
-		if sym, ok := v.Aux.(*ssa.AuxCall); !ok || !(sym.Fn == ir.Syms.Typedmemclr || sym.Fn == ir.Syms.Typedmemmove) {
+		if sym, ok := v.Aux.(*ssa.AuxCall); !ok || !(sym.Fn == ir.Syms.WBZero || sym.Fn == ir.Syms.WBMove) {
 			base.Fatalf("missing stack map index for %v", v.LongString())
 		}
 	}
@@ -7911,12 +7906,14 @@ func (e *ssafn) Syslook(name string) *obj.LSym {
 		return ir.Syms.Goschedguarded
 	case "writeBarrier":
 		return ir.Syms.WriteBarrier
-	case "gcWriteBarrier":
-		return ir.Syms.GCWriteBarrier
-	case "typedmemmove":
-		return ir.Syms.Typedmemmove
-	case "typedmemclr":
-		return ir.Syms.Typedmemclr
+	case "wbZero":
+		return ir.Syms.WBZero
+	case "wbMove":
+		return ir.Syms.WBMove
+	case "cgoCheckMemmove":
+		return ir.Syms.CgoCheckMemmove
+	case "cgoCheckPtrWrite":
+		return ir.Syms.CgoCheckPtrWrite
 	}
 	e.Fatalf(src.NoXPos, "unknown Syslook func %v", name)
 	return nil
@@ -8029,6 +8026,3 @@ var (
 	BoundsCheckFunc [ssa.BoundsKindCount]*obj.LSym
 	ExtendCheckFunc [ssa.BoundsKindCount]*obj.LSym
 )
-
-// GCWriteBarrierReg maps from registers to gcWriteBarrier implementation LSyms.
-var GCWriteBarrierReg map[int16]*obj.LSym
