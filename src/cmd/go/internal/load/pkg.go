@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -194,6 +195,9 @@ func (p *Package) Desc() string {
 	if p.ForTest != "" {
 		return p.ImportPath + " [" + p.ForTest + ".test]"
 	}
+	if p.Internal.ForMain != "" {
+		return p.ImportPath + " [" + p.Internal.ForMain + "]"
+	}
 	return p.ImportPath
 }
 
@@ -232,6 +236,8 @@ type PackageInternal struct {
 	TestmainGo        *[]byte              // content for _testmain.go
 	Embed             map[string][]string  // //go:embed comment mapping
 	OrigImportPath    string               // original import path before adding '_test' suffix
+	PGOProfile        string               // path to PGO profile
+	ForMain           string               // the main package if this package is built specifically for it
 
 	Asmflags   []string // -asmflags for this package
 	Gcflags    []string // -gcflags for this package
@@ -678,6 +684,15 @@ const (
 	// GetTestDeps is for download (part of "go get") and indicates
 	// that test dependencies should be fetched too.
 	GetTestDeps
+
+	// The remainder are internal modes for calls to loadImport.
+
+	// cmdlinePkg is for a package mentioned on the command line.
+	cmdlinePkg
+
+	// cmdlinePkgLiteral is for a package mentioned on the command line
+	// without using any wildcards or meta-patterns.
+	cmdlinePkgLiteral
 )
 
 // LoadImport scans the directory named by path, which must be an import path,
@@ -732,17 +747,29 @@ func loadImport(ctx context.Context, opts PackageOpts, pre *preload, path, srcDi
 		return p
 	}
 
+	setCmdline := func(p *Package) {
+		if mode&cmdlinePkg != 0 {
+			p.Internal.CmdlinePkg = true
+		}
+		if mode&cmdlinePkgLiteral != 0 {
+			p.Internal.CmdlinePkgLiteral = true
+		}
+	}
+
 	importPath := bp.ImportPath
 	p := packageCache[importPath]
 	if p != nil {
 		stk.Push(path)
 		p = reusePackage(p, stk)
 		stk.Pop()
+		setCmdline(p)
 	} else {
 		p = new(Package)
 		p.Internal.Local = build.IsLocalImport(path)
 		p.ImportPath = importPath
 		packageCache[importPath] = p
+
+		setCmdline(p)
 
 		// Load package.
 		// loadPackageData may return bp != nil even if an error occurs,
@@ -2385,11 +2412,11 @@ func (p *Package) setBuildInfo(autoVCS bool) {
 			appendSetting("-ldflags", ldflags)
 		}
 	}
-	if cfg.BuildPGOFile != "" {
+	if p.Internal.PGOProfile != "" {
 		if cfg.BuildTrimpath {
-			appendSetting("-pgo", filepath.Base(cfg.BuildPGOFile))
+			appendSetting("-pgo", filepath.Base(p.Internal.PGOProfile))
 		} else {
-			appendSetting("-pgo", cfg.BuildPGOFile)
+			appendSetting("-pgo", p.Internal.PGOProfile)
 		}
 	}
 	if cfg.BuildMSan {
@@ -2600,23 +2627,38 @@ func externalLinkingForced(p *Package) bool {
 	}
 
 	// Some targets must use external linking even inside GOROOT.
-	switch cfg.BuildContext.GOOS {
-	case "android":
-		if cfg.BuildContext.GOARCH != "arm64" {
-			return true
-		}
-	case "ios":
+	if platform.MustLinkExternal(cfg.BuildContext.GOOS, cfg.BuildContext.GOARCH, false) {
 		return true
 	}
 
-	// Currently build modes c-shared, pie (on systems that do not
-	// support PIE with internal linking mode (currently all
-	// systems: issue #18968)), plugin, and -linkshared force
-	// external linking mode, as of course does
-	// -ldflags=-linkmode=external. External linking mode forces
-	// an import of runtime/cgo.
+	// Some build modes always require external linking.
+	switch cfg.BuildBuildmode {
+	case "c-shared", "plugin":
+		return true
+	}
+
+	// Using -linkshared always requires external linking.
+	if cfg.BuildLinkshared {
+		return true
+	}
+
+	// Decide whether we are building a PIE,
+	// bearing in mind that some systems default to PIE.
+	isPIE := false
+	if cfg.BuildBuildmode == "pie" {
+		isPIE = true
+	} else if cfg.BuildBuildmode == "default" && platform.DefaultPIE(cfg.BuildContext.GOOS, cfg.BuildContext.GOARCH, cfg.BuildRace) {
+		isPIE = true
+	}
+	// If we are building a PIE, and we are on a system
+	// that does not support PIE with internal linking mode,
+	// then we must use external linking.
+	if isPIE && !platform.InternalLinkPIESupported(cfg.BuildContext.GOOS, cfg.BuildContext.GOARCH) {
+		return true
+	}
+
+	// Using -ldflags=-linkmode=external forces external linking.
 	// If there are multiple -linkmode options, the last one wins.
-	pieCgo := cfg.BuildBuildmode == "pie" && !platform.InternalLinkPIESupported(cfg.BuildContext.GOOS, cfg.BuildContext.GOARCH)
 	linkmodeExternal := false
 	if p != nil {
 		ldflags := BuildLdflags.For(p)
@@ -2632,8 +2674,7 @@ func externalLinkingForced(p *Package) bool {
 			}
 		}
 	}
-
-	return cfg.BuildBuildmode == "c-shared" || cfg.BuildBuildmode == "plugin" || pieCgo || cfg.BuildLinkshared || linkmodeExternal
+	return linkmodeExternal
 }
 
 // mkAbs rewrites list, which must be paths relative to p.Dir,
@@ -2843,15 +2884,15 @@ func PackagesAndErrors(ctx context.Context, opts PackageOpts, patterns []string)
 			if pkg == "" {
 				panic(fmt.Sprintf("ImportPaths returned empty package for pattern %s", m.Pattern()))
 			}
-			p := loadImport(ctx, opts, pre, pkg, base.Cwd(), nil, &stk, nil, 0)
-			p.Match = append(p.Match, m.Pattern())
-			p.Internal.CmdlinePkg = true
+			mode := cmdlinePkg
 			if m.IsLiteral() {
 				// Note: do not set = m.IsLiteral unconditionally
 				// because maybe we'll see p matching both
 				// a literal and also a non-literal pattern.
-				p.Internal.CmdlinePkgLiteral = true
+				mode |= cmdlinePkgLiteral
 			}
+			p := loadImport(ctx, opts, pre, pkg, base.Cwd(), nil, &stk, nil, mode)
+			p.Match = append(p.Match, m.Pattern())
 			if seenPkg[p] {
 				continue
 			}
@@ -2894,51 +2935,76 @@ func PackagesAndErrors(ctx context.Context, opts PackageOpts, patterns []string)
 	return pkgs
 }
 
-// setPGOProfilePath sets cfg.BuildPGOFile to the PGO profile path.
+// setPGOProfilePath sets the PGO profile path for pkgs.
 // In -pgo=auto mode, it finds the default PGO profile.
 func setPGOProfilePath(pkgs []*Package) {
 	switch cfg.BuildPGO {
-	case "":
-		fallthrough // default to "off"
 	case "off":
 		return
 
 	case "auto":
-		// Locate PGO profile from the main package.
-
-		setError := func(p *Package) {
-			if p.Error == nil {
-				p.Error = &PackageError{Err: errors.New("-pgo=auto requires exactly one main package")}
-			}
-		}
-
-		var mainpkg *Package
+		// Locate PGO profiles from the main packages, and
+		// attach the profile to the main package and its
+		// dependencies.
+		// If we're builing multiple main packages, they may
+		// have different profiles. We may need to split (unshare)
+		// the dependency graph so they can attach different
+		// profiles.
 		for _, p := range pkgs {
-			if p.Name == "main" {
-				if mainpkg != nil {
-					setError(p)
-					setError(mainpkg)
-					continue
-				}
-				mainpkg = p
+			if p.Name != "main" {
+				continue
 			}
-		}
-		if mainpkg == nil {
-			// No main package, no default.pgo to look for.
-			return
-		}
-		file := filepath.Join(mainpkg.Dir, "default.pgo")
-		if fi, err := os.Stat(file); err == nil && !fi.IsDir() {
-			cfg.BuildPGOFile = file
+			pmain := p
+			file := filepath.Join(pmain.Dir, "default.pgo")
+			if _, err := os.Stat(file); err != nil {
+				continue // no profile
+			}
+
+			copied := make(map[*Package]*Package)
+			var split func(p *Package) *Package
+			split = func(p *Package) *Package {
+				if len(pkgs) > 1 && p != pmain {
+					// Make a copy, then attach profile.
+					// No need to copy if there is only one root package (we can
+					// attach profile directly in-place).
+					// Also no need to copy the main package.
+					if p1 := copied[p]; p1 != nil {
+						return p1
+					}
+					if p.Internal.PGOProfile != "" {
+						panic("setPGOProfilePath: already have profile")
+					}
+					p1 := new(Package)
+					*p1 = *p
+					// Unalias the Internal.Imports slice, which is we're going to
+					// modify. We don't copy other slices as we don't change them.
+					p1.Internal.Imports = slices.Clone(p.Internal.Imports)
+					copied[p] = p1
+					p = p1
+					p.Internal.ForMain = pmain.ImportPath
+				}
+				p.Internal.PGOProfile = file
+				// Recurse to dependencies.
+				for i, pp := range p.Internal.Imports {
+					p.Internal.Imports[i] = split(pp)
+				}
+				return p
+			}
+
+			// Replace the package and imports with the PGO version.
+			split(pmain)
 		}
 
 	default:
 		// Profile specified from the command line.
 		// Make it absolute path, as the compiler runs on various directories.
-		if p, err := filepath.Abs(cfg.BuildPGO); err != nil {
+		file, err := filepath.Abs(cfg.BuildPGO)
+		if err != nil {
 			base.Fatalf("fail to get absolute path of PGO file %s: %v", cfg.BuildPGO, err)
-		} else {
-			cfg.BuildPGOFile = p
+		}
+
+		for _, p := range PackageList(pkgs) {
+			p.Internal.PGOProfile = file
 		}
 	}
 }
@@ -2973,11 +3039,18 @@ func CheckPackageErrors(pkgs []*Package) {
 	seen := map[string]bool{}
 	reported := map[string]bool{}
 	for _, pkg := range PackageList(pkgs) {
-		if seen[pkg.ImportPath] && !reported[pkg.ImportPath] {
-			reported[pkg.ImportPath] = true
+		// -pgo=auto with multiple main packages can cause a package being
+		// built multiple times (with different profiles).
+		// We check that package import path + profile path is unique.
+		key := pkg.ImportPath
+		if pkg.Internal.PGOProfile != "" {
+			key += " pgo:" + pkg.Internal.PGOProfile
+		}
+		if seen[key] && !reported[key] {
+			reported[key] = true
 			base.Errorf("internal error: duplicate loads of %s", pkg.ImportPath)
 		}
-		seen[pkg.ImportPath] = true
+		seen[key] = true
 	}
 	base.ExitIfErrors()
 }

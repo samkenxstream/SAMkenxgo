@@ -27,6 +27,7 @@ import (
 	"cmd/compile/internal/syntax"
 	"fmt"
 	"go/constant"
+	. "internal/types/errors"
 	"strings"
 )
 
@@ -39,6 +40,7 @@ type Error struct {
 	Msg  string     // default error message, user-friendly
 	Full string     // full error message, for debugging (may contain internal details)
 	Soft bool       // if set, error is "soft"
+	Code Code       // error code
 }
 
 // Error returns an error string formatted as follows:
@@ -167,6 +169,13 @@ type Config struct {
 	// If DisableUnusedImportCheck is set, packages are not checked
 	// for unused imports.
 	DisableUnusedImportCheck bool
+
+	// If EnableReverseTypeInference is set, uninstantiated and
+	// partially instantiated generic functions may be assigned
+	// (incl. returned) to variables of function type and type
+	// inference will attempt to infer the missing type arguments.
+	// Experimental. Needs a proposal.
+	EnableReverseTypeInference bool
 }
 
 func srcimporter_setUsesCgo(conf *Config) {
@@ -442,7 +451,7 @@ func AssertableTo(V *Interface, T Type) bool {
 	if T.Underlying() == Typ[Invalid] {
 		return false
 	}
-	return (*Checker)(nil).newAssertableTo(V, T)
+	return (*Checker)(nil).newAssertableTo(V, T, nil)
 }
 
 // AssignableTo reports whether a value of type V is assignable to a variable

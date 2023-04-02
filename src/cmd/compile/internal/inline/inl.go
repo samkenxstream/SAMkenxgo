@@ -186,21 +186,45 @@ func InlineDecls(p *pgo.Profile, decls []ir.Node, doInline bool) {
 		pgoInlinePrologue(p, decls)
 	}
 
+	doCanInline := func(n *ir.Func, recursive bool, numfns int) {
+		if !recursive || numfns > 1 {
+			// We allow inlining if there is no
+			// recursion, or the recursion cycle is
+			// across more than one function.
+			CanInline(n, p)
+		} else {
+			if base.Flag.LowerM > 1 && n.OClosure == nil {
+				fmt.Printf("%v: cannot inline %v: recursive\n", ir.Line(n), n.Nname)
+			}
+		}
+	}
+
 	ir.VisitFuncsBottomUp(decls, func(list []*ir.Func, recursive bool) {
 		numfns := numNonClosures(list)
-		for _, n := range list {
-			if !recursive || numfns > 1 {
-				// We allow inlining if there is no
-				// recursion, or the recursion cycle is
-				// across more than one function.
-				CanInline(n, p)
-			} else {
-				if base.Flag.LowerM > 1 && n.OClosure == nil {
-					fmt.Printf("%v: cannot inline %v: recursive\n", ir.Line(n), n.Nname)
+		// We visit functions within an SCC in fairly arbitrary order,
+		// so by computing inlinability for all functions in the SCC
+		// before performing any inlining, the results are less
+		// sensitive to the order within the SCC (see #58905 for an
+		// example).
+		if base.Debug.InlineSCCOnePass == 0 {
+			// Compute inlinability for all functions in the SCC ...
+			for _, n := range list {
+				doCanInline(n, recursive, numfns)
+			}
+			// ... then make a second pass to do inlining of calls.
+			if doInline {
+				for _, n := range list {
+					InlineCalls(n, p)
 				}
 			}
-			if doInline {
-				InlineCalls(n, p)
+		} else {
+			// Legacy ordering to make it easier to triage any bugs
+			// or compile time issues that might crop up.
+			for _, n := range list {
+				doCanInline(n, recursive, numfns)
+				if doInline {
+					InlineCalls(n, p)
+				}
 			}
 		}
 	})
@@ -287,6 +311,13 @@ func CanInline(fn *ir.Func, profile *pgo.Profile) {
 	// If fn has no body (is defined outside of Go), cannot inline it.
 	if len(fn.Body) == 0 {
 		reason = "no function body"
+		return
+	}
+
+	// If fn is synthetic hash or eq function, cannot inline it.
+	// The function is not generated in Unified IR frontend at this moment.
+	if ir.IsEqOrHashFunc(fn) {
+		reason = "type eq/hash function"
 		return
 	}
 
@@ -415,6 +446,8 @@ func (v *hairyVisitor) tooHairy(fn *ir.Func) bool {
 	return false
 }
 
+// doNode visits n and its children, updates the state in v, and returns true if
+// n makes the current function too hairy for inlining.
 func (v *hairyVisitor) doNode(n ir.Node) bool {
 	if n == nil {
 		return false
@@ -546,13 +579,10 @@ func (v *hairyVisitor) doNode(n ir.Node) bool {
 		// TODO(danscales): Maybe make budget proportional to number of closure
 		// variables, e.g.:
 		//v.budget -= int32(len(n.(*ir.ClosureExpr).Func.ClosureVars) * 3)
+		// TODO(austin): However, if we're able to inline this closure into
+		// v.curFunc, then we actually pay nothing for the closure captures. We
+		// should try to account for that if we're going to account for captures.
 		v.budget -= 15
-		// Scan body of closure (which DoChildren doesn't automatically
-		// do) to check for disallowed ops in the body and include the
-		// body in the budget.
-		if doList(n.(*ir.ClosureExpr).Func.Body, v.do) {
-			return true
-		}
 
 	case ir.OGO,
 		ir.ODEFER,

@@ -148,9 +148,9 @@ The template function "context" returns the build context, defined as:
         GOROOT        string   // Go root
         GOPATH        string   // Go path
         CgoEnabled    bool     // whether cgo can be used
-        UseAllFiles   bool     // use files regardless of +build lines, file names
+        UseAllFiles   bool     // use files regardless of //go:build lines, file names
         Compiler      string   // compiler to assume when computing target paths
-        BuildTags     []string // build constraints to match in +build lines
+        BuildTags     []string // build constraints to match in //go:build lines
         ToolTags      []string // toolchain-specific build constraints
         ReleaseTags   []string // releases the current release is compatible with
         InstallSuffix string   // suffix to use in the name of the install dir
@@ -609,8 +609,8 @@ func runList(ctx context.Context, cmd *base.Command, args []string) {
 		// might not expect those errors to stop showing up.
 		// See issue #52443.
 		SuppressDeps:       !listJsonFields.needAny("Deps", "DepsErrors"),
-		SuppressBuildInfo:  !listJsonFields.needAny("Stale", "StaleReason"),
-		SuppressEmbedFiles: !listJsonFields.needAny("EmbedFiles", "TestEmbedFiles", "XTestEmbedFiles"),
+		SuppressBuildInfo:  !*listExport && !listJsonFields.needAny("Stale", "StaleReason"),
+		SuppressEmbedFiles: !*listExport && !listJsonFields.needAny("EmbedFiles", "TestEmbedFiles", "XTestEmbedFiles"),
 	}
 	pkgs := load.PackagesAndErrors(ctx, pkgOpts, args)
 	if !*listE {
@@ -733,19 +733,20 @@ func runList(ctx context.Context, cmd *base.Command, args []string) {
 		}
 	}
 
-	if *listTest {
+	if *listTest || (cfg.BuildPGO == "auto" && len(cmdline) > 1) {
 		all := pkgs
 		if !*listDeps {
 			all = loadPackageList(pkgs)
 		}
 		// Update import paths to distinguish the real package p
-		// from p recompiled for q.test.
+		// from p recompiled for q.test, or to distinguish between
+		// p compiled with different PGO profiles.
 		// This must happen only once the build code is done
 		// looking at import paths, because it will get very confused
 		// if it sees these.
 		old := make(map[string]string)
 		for _, p := range all {
-			if p.ForTest != "" {
+			if p.ForTest != "" || p.Internal.ForMain != "" {
 				new := p.Desc()
 				old[new] = p.ImportPath
 				p.ImportPath = new
@@ -756,7 +757,7 @@ func runList(ctx context.Context, cmd *base.Command, args []string) {
 		m := make(map[string]string)
 		for _, p := range all {
 			for _, p1 := range p.Internal.Imports {
-				if p1.ForTest != "" {
+				if p1.ForTest != "" || p1.Internal.ForMain != "" {
 					m[old[p1.ImportPath]] = p1.ImportPath
 				}
 			}

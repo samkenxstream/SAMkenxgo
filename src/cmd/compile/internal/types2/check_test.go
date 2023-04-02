@@ -133,6 +133,7 @@ func testFiles(t *testing.T, filenames []string, colDelta uint, manual bool) {
 	flags := flag.NewFlagSet("", flag.PanicOnError)
 	flags.StringVar(&conf.GoVersion, "lang", "", "")
 	flags.BoolVar(&conf.FakeImportC, "fakeImportC", false, "")
+	flags.BoolVar(&conf.EnableReverseTypeInference, "reverseTypeInference", false, "")
 	if err := parseFlags(filenames[0], nil, flags); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +327,7 @@ func TestCheck(t *testing.T) {
 }
 func TestSpec(t *testing.T) { testDirFiles(t, "../../../../internal/types/testdata/spec", 0, false) }
 func TestExamples(t *testing.T) {
-	testDirFiles(t, "../../../../internal/types/testdata/examples", 50, false)
+	testDirFiles(t, "../../../../internal/types/testdata/examples", 125, false)
 } // TODO(gri) narrow column tolerance
 func TestFixedbugs(t *testing.T) {
 	testDirFiles(t, "../../../../internal/types/testdata/fixedbugs", 100, false)

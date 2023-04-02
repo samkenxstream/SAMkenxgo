@@ -456,6 +456,7 @@ const (
 	Op386NOTL
 	Op386BSFL
 	Op386BSFW
+	Op386LoweredCtz32
 	Op386BSRL
 	Op386BSRW
 	Op386BSWAPL
@@ -1669,6 +1670,8 @@ const (
 	OpARM64NotLessEqualF
 	OpARM64NotGreaterThanF
 	OpARM64NotGreaterEqualF
+	OpARM64LessThanNoov
+	OpARM64GreaterEqualNoov
 	OpARM64DUFFZERO
 	OpARM64LoweredZero
 	OpARM64DUFFCOPY
@@ -1716,7 +1719,8 @@ const (
 	OpLOONG64SUBV
 	OpLOONG64SUBVconst
 	OpLOONG64MULV
-	OpLOONG64MULVU
+	OpLOONG64MULHV
+	OpLOONG64MULHVU
 	OpLOONG64DIVV
 	OpLOONG64DIVVU
 	OpLOONG64ADDF
@@ -5024,6 +5028,19 @@ var opcodeTable = [...]opInfo{
 		argLen:       1,
 		clobberFlags: true,
 		asm:          x86.ABSFW,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, 239}, // AX CX DX BX BP SI DI
+			},
+			outputs: []outputInfo{
+				{0, 239}, // AX CX DX BX BP SI DI
+			},
+		},
+	},
+	{
+		name:         "LoweredCtz32",
+		argLen:       1,
+		clobberFlags: true,
 		reg: regInfo{
 			inputs: []inputInfo{
 				{0, 239}, // AX CX DX BX BP SI DI
@@ -22262,6 +22279,24 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
+		name:   "LessThanNoov",
+		argLen: 1,
+		reg: regInfo{
+			outputs: []outputInfo{
+				{0, 670826495}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R19 R20 R21 R22 R23 R24 R25 R26 R30
+			},
+		},
+	},
+	{
+		name:   "GreaterEqualNoov",
+		argLen: 1,
+		reg: regInfo{
+			outputs: []outputInfo{
+				{0, 670826495}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R19 R20 R21 R22 R23 R24 R25 R26 R30
+			},
+		},
+	},
+	{
 		name:           "DUFFZERO",
 		auxType:        auxInt64,
 		argLen:         2,
@@ -22912,34 +22947,47 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:            "MULV",
-		argLen:          2,
-		commutative:     true,
-		resultNotInArgs: true,
+		name:        "MULV",
+		argLen:      2,
+		commutative: true,
+		asm:         loong64.AMULV,
 		reg: regInfo{
 			inputs: []inputInfo{
-				{0, 1072496632}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
-				{1, 1072496632}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
+				{0, 1072693240}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
+				{1, 1072693240}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
 			},
 			outputs: []outputInfo{
 				{0, 1070596088}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R23 R24 R25 R26 R27 R28 R29 R31
-				{1, 1070596088}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R23 R24 R25 R26 R27 R28 R29 R31
 			},
 		},
 	},
 	{
-		name:            "MULVU",
-		argLen:          2,
-		commutative:     true,
-		resultNotInArgs: true,
+		name:        "MULHV",
+		argLen:      2,
+		commutative: true,
+		asm:         loong64.AMULHV,
 		reg: regInfo{
 			inputs: []inputInfo{
-				{0, 1072496632}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
-				{1, 1072496632}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
+				{0, 1072693240}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
+				{1, 1072693240}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
 			},
 			outputs: []outputInfo{
 				{0, 1070596088}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R23 R24 R25 R26 R27 R28 R29 R31
-				{1, 1070596088}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R23 R24 R25 R26 R27 R28 R29 R31
+			},
+		},
+	},
+	{
+		name:        "MULHVU",
+		argLen:      2,
+		commutative: true,
+		asm:         loong64.AMULHVU,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, 1072693240}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
+				{1, 1072693240}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 g R23 R24 R25 R26 R27 R28 R29 R31
+			},
+			outputs: []outputInfo{
+				{0, 1070596088}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R23 R24 R25 R26 R27 R28 R29 R31
 			},
 		},
 	},

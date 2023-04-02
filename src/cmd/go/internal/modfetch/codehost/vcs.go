@@ -288,7 +288,7 @@ func (r *vcsRepo) loadBranches() {
 }
 
 func (r *vcsRepo) CheckReuse(old *Origin, subdir string) error {
-	return fmt.Errorf("vcs %s: CheckReuse: %w", r.cmd.vcs, ErrUnsupported)
+	return fmt.Errorf("vcs %s: CheckReuse: %w", r.cmd.vcs, errors.ErrUnsupported)
 }
 
 func (r *vcsRepo) Tags(prefix string) (*Tags, error) {
@@ -412,7 +412,7 @@ func (r *vcsRepo) RecentTag(rev, prefix string, allowed func(string) bool) (tag 
 	}
 	defer unlock()
 
-	return "", vcsErrorf("vcs %s: RecentTag: %w", r.cmd.vcs, ErrUnsupported)
+	return "", vcsErrorf("vcs %s: RecentTag: %w", r.cmd.vcs, errors.ErrUnsupported)
 }
 
 func (r *vcsRepo) DescendsFrom(rev, tag string) (bool, error) {
@@ -422,12 +422,12 @@ func (r *vcsRepo) DescendsFrom(rev, tag string) (bool, error) {
 	}
 	defer unlock()
 
-	return false, vcsErrorf("vcs %s: DescendsFrom: %w", r.cmd.vcs, ErrUnsupported)
+	return false, vcsErrorf("vcs %s: DescendsFrom: %w", r.cmd.vcs, errors.ErrUnsupported)
 }
 
 func (r *vcsRepo) ReadZip(rev, subdir string, maxSize int64) (zip io.ReadCloser, err error) {
 	if r.cmd.readZip == nil && r.cmd.doReadZip == nil {
-		return nil, vcsErrorf("vcs %s: ReadZip: %w", r.cmd.vcs, ErrUnsupported)
+		return nil, vcsErrorf("vcs %s: ReadZip: %w", r.cmd.vcs, errors.ErrUnsupported)
 	}
 
 	unlock, err := r.mu.Lock()
@@ -488,7 +488,7 @@ func (d *deleteCloser) Close() error {
 }
 
 func hgParseStat(rev, out string) (*RevInfo, error) {
-	f := strings.Fields(string(out))
+	f := strings.Fields(out)
 	if len(f) < 3 {
 		return nil, vcsErrorf("unexpected response from hg log: %q", out)
 	}
@@ -567,7 +567,7 @@ func bzrParseStat(rev, out string) (*RevInfo, error) {
 	}
 
 	info := &RevInfo{
-		Name:    fmt.Sprintf("%d", revno),
+		Name:    strconv.FormatInt(revno, 10),
 		Short:   fmt.Sprintf("%012d", revno),
 		Time:    tm,
 		Version: rev,

@@ -81,7 +81,6 @@ var (
 	BuildO                 string                  // -o flag
 	BuildP                 = runtime.GOMAXPROCS(0) // -p flag
 	BuildPGO               string                  // -pgo flag
-	BuildPGOFile           string                  // profile selected by -pgo flag, an absolute path (if not empty)
 	BuildPkgdir            string                  // -pkgdir flag
 	BuildRace              bool                    // -race flag
 	BuildToolexec          []string                // -toolexec flag
@@ -98,8 +97,9 @@ var (
 
 	CmdName string // "build", "install", "list", "mod tidy", etc.
 
-	DebugActiongraph string // -debug-actiongraph flag (undocumented, unstable)
-	DebugTrace       string // -debug-trace flag
+	DebugActiongraph  string // -debug-actiongraph flag (undocumented, unstable)
+	DebugTrace        string // -debug-trace flag
+	DebugRuntimeTrace string // -debug-runtime-trace flag (undocumented, unstable)
 
 	// GoPathError is set when GOPATH is not set. it contains an
 	// explanation why GOPATH is unset.

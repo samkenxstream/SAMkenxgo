@@ -206,6 +206,7 @@ func TestPackagesAndErrors(ctx context.Context, opts PackageOpts, p *Package, co
 		ptest.Internal.Embed = testEmbed
 		ptest.EmbedFiles = str.StringList(p.EmbedFiles, p.TestEmbedFiles)
 		ptest.Internal.OrigImportPath = p.Internal.OrigImportPath
+		ptest.Internal.PGOProfile = p.Internal.PGOProfile
 		ptest.Internal.Build.Directives = append(slices.Clip(p.Internal.Build.Directives), p.Internal.Build.TestDirectives...)
 		ptest.collectDeps()
 	} else {
@@ -243,6 +244,7 @@ func TestPackagesAndErrors(ctx context.Context, opts PackageOpts, p *Package, co
 				Gccgoflags:     p.Internal.Gccgoflags,
 				Embed:          xtestEmbed,
 				OrigImportPath: p.Internal.OrigImportPath,
+				PGOProfile:     p.Internal.PGOProfile,
 			},
 		}
 		if pxtestNeedsPtest {
@@ -250,6 +252,10 @@ func TestPackagesAndErrors(ctx context.Context, opts PackageOpts, p *Package, co
 		}
 		pxtest.collectDeps()
 	}
+
+	// Arrange for testing.Testing to report true.
+	ldflags := append(p.Internal.Ldflags, "-X", "testing.testBinary=1")
+	gccgoflags := append(p.Internal.Gccgoflags, "-Wl,--defsym,testing.gccgoTestBinary=1")
 
 	// Build main package.
 	pmain = &Package{
@@ -267,9 +273,10 @@ func TestPackagesAndErrors(ctx context.Context, opts PackageOpts, p *Package, co
 			BuildInfo:      p.Internal.BuildInfo,
 			Asmflags:       p.Internal.Asmflags,
 			Gcflags:        p.Internal.Gcflags,
-			Ldflags:        p.Internal.Ldflags,
-			Gccgoflags:     p.Internal.Gccgoflags,
+			Ldflags:        ldflags,
+			Gccgoflags:     gccgoflags,
 			OrigImportPath: p.Internal.OrigImportPath,
+			PGOProfile:     p.Internal.PGOProfile,
 		},
 	}
 

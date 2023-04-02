@@ -86,6 +86,7 @@ var okgoos = []string{
 	"illumos",
 	"ios",
 	"js",
+	"wasip1",
 	"linux",
 	"android",
 	"solaris",
@@ -313,6 +314,9 @@ var clangos = []string{
 // compilerEnvLookup returns the compiler settings for goos/goarch in map m.
 // kind is "CC" or "CXX".
 func compilerEnvLookup(kind string, m map[string]string, goos, goarch string) string {
+	if !needCC() {
+		return ""
+	}
 	if cc := m[goos+"/"+goarch]; cc != "" {
 		return cc
 	}
@@ -539,7 +543,36 @@ func setup() {
 // mustLinkExternal is a copy of internal/platform.MustLinkExternal,
 // duplicated here to avoid version skew in the MustLinkExternal function
 // during bootstrapping.
-func mustLinkExternal(goos, goarch string) bool {
+func mustLinkExternal(goos, goarch string, cgoEnabled bool) bool {
+	if cgoEnabled {
+		switch goarch {
+		case "loong64",
+			"mips", "mipsle", "mips64", "mips64le",
+			"riscv64":
+			// Internally linking cgo is incomplete on some architectures.
+			// https://golang.org/issue/14449
+			return true
+		case "arm64":
+			if goos == "windows" {
+				// windows/arm64 internal linking is not implemented.
+				return true
+			}
+		case "ppc64":
+			// Big Endian PPC64 cgo internal linking is not implemented for aix or linux.
+			return true
+		}
+
+		switch goos {
+		case "android":
+			return true
+		case "dragonfly":
+			// It seems that on Dragonfly thread local storage is
+			// set up by the dynamic linker, so internal cgo linking
+			// doesn't work. Test case is "go test runtime/cgo".
+			return true
+		}
+	}
+
 	switch goos {
 	case "android":
 		if goarch != "arm64" {
@@ -1283,7 +1316,7 @@ func timelog(op, name string) {
 // to switch between the host and target configurations when cross-compiling.
 func toolenv() []string {
 	var env []string
-	if !mustLinkExternal(goos, goarch) {
+	if !mustLinkExternal(goos, goarch, false) {
 		// Unless the platform requires external linking,
 		// we disable cgo to get static binaries for cmd/go and cmd/pprof,
 		// so that they work on systems without the same dynamic libraries
@@ -1296,7 +1329,7 @@ func toolenv() []string {
 		// Do not include local development, so that people working in the
 		// main branch for day-to-day work on the Go toolchain itself can
 		// still have full paths for stack traces for compiler crashes and the like.
-		env = append(env, "GOFLAGS=-trimpath")
+		env = append(env, "GOFLAGS=-trimpath -ldflags=-w -gcflags=cmd/...=-dwarf=false")
 	}
 	return env
 }
@@ -1539,7 +1572,7 @@ func cmdbootstrap() {
 	}
 
 	// Remove go_bootstrap now that we're done.
-	xremove(pathf("%s/go_bootstrap", tooldir))
+	xremove(pathf("%s/go_bootstrap"+exe, tooldir))
 
 	if goos == "android" {
 		// Make sure the exec wrapper will sync a fresh $GOROOT to the device.
@@ -1671,6 +1704,7 @@ var cgoEnabled = map[string]bool{
 	"ios/arm64":       true,
 	"ios/amd64":       true,
 	"js/wasm":         false,
+	"wasip1/wasm":     false,
 	"netbsd/386":      true,
 	"netbsd/amd64":    true,
 	"netbsd/arm":      true,
@@ -1680,6 +1714,7 @@ var cgoEnabled = map[string]bool{
 	"openbsd/arm":     true,
 	"openbsd/arm64":   true,
 	"openbsd/mips64":  true,
+	"openbsd/ppc64":   false,
 	"plan9/386":       false,
 	"plan9/amd64":     false,
 	"plan9/arm":       false,
@@ -1696,6 +1731,7 @@ var cgoEnabled = map[string]bool{
 // See go.dev/issue/56679.
 var broken = map[string]bool{
 	"linux/sparc64": true, // An incomplete port. See CL 132155.
+	"wasip1/wasm":   true, // An incomplete port. See CL 479627.
 }
 
 // List of platforms which are first class ports. See go.dev/issue/38874.
@@ -1710,14 +1746,10 @@ var firstClass = map[string]bool{
 	"windows/amd64": true,
 }
 
+// We only need CC if cgo is forced on, or if the platform requires external linking.
+// Otherwise the go command will automatically disable it.
 func needCC() bool {
-	switch os.Getenv("CGO_ENABLED") {
-	case "1":
-		return true
-	case "0":
-		return false
-	}
-	return cgoEnabled[gohostos+"/"+gohostarch]
+	return os.Getenv("CGO_ENABLED") == "1" || mustLinkExternal(gohostos, gohostarch, false)
 }
 
 func checkCC() {

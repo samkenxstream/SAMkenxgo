@@ -7,7 +7,6 @@ package ssagen
 import (
 	"bufio"
 	"bytes"
-	"cmd/compile/internal/abi"
 	"fmt"
 	"go/constant"
 	"html"
@@ -17,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"cmd/compile/internal/abi"
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/liveness"
@@ -1796,6 +1796,7 @@ func (s *state) stmt(n ir.Node) {
 		// OFOR: for Ninit; Left; Right { Nbody }
 		// cond (Left); body (Nbody); incr (Right)
 		n := n.(*ir.ForStmt)
+		base.Assert(!n.DistinctVars) // Should all be rewritten before escape analysis
 		bCond := s.f.NewBlock(ssa.BlockPlain)
 		bBody := s.f.NewBlock(ssa.BlockPlain)
 		bIncr := s.f.NewBlock(ssa.BlockPlain)
@@ -3198,7 +3199,10 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 		n := n.(*ir.UnaryExpr)
 		a := s.expr(n.X)
 		if n.X.Type().IsSlice() {
-			return s.newValue1(ssa.OpSlicePtr, n.Type(), a)
+			if n.Bounded() {
+				return s.newValue1(ssa.OpSlicePtr, n.Type(), a)
+			}
+			return s.newValue1(ssa.OpSlicePtrUnchecked, n.Type(), a)
 		} else {
 			return s.newValue1(ssa.OpStringPtr, n.Type(), a)
 		}
@@ -3273,10 +3277,15 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 		// slice.ptr
 		n := n.(*ir.ConvExpr)
 		v := s.expr(n.X)
-		arrlen := s.constInt(types.Types[types.TINT], n.Type().Elem().NumElem())
+		nelem := n.Type().Elem().NumElem()
+		arrlen := s.constInt(types.Types[types.TINT], nelem)
 		cap := s.newValue1(ssa.OpSliceLen, types.Types[types.TINT], v)
 		s.boundsCheck(arrlen, cap, ssa.BoundsConvert, false)
-		return s.newValue1(ssa.OpSlicePtrUnchecked, n.Type(), v)
+		op := ssa.OpSlicePtr
+		if nelem == 0 {
+			op = ssa.OpSlicePtrUnchecked
+		}
+		return s.newValue1(op, n.Type(), v)
 
 	case ir.OCALLFUNC:
 		n := n.(*ir.CallExpr)
@@ -3520,6 +3529,10 @@ func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {
 		}
 	}
 
+	// The following deletions have no practical effect at this time
+	// because state.vars has been reset by the preceding state.startBlock.
+	// They only enforce the fact that these variables are no longer need in
+	// the current scope.
 	delete(s.vars, ptrVar)
 	delete(s.vars, lenVar)
 	if !inplace {
@@ -4487,12 +4500,12 @@ func InitTables() {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCtz64, types.Types[types.TINT], args[0])
 		},
-		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+		sys.AMD64, sys.I386, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
 	addF("math/bits", "TrailingZeros32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCtz32, types.Types[types.TINT], args[0])
 		},
-		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+		sys.AMD64, sys.I386, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
 	addF("math/bits", "TrailingZeros16",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			x := s.newValue1(ssa.OpZeroExt16to32, types.Types[types.TUINT32], args[0])
@@ -4526,7 +4539,7 @@ func InitTables() {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCtz8, types.Types[types.TINT], args[0])
 		},
-		sys.AMD64, sys.ARM, sys.ARM64, sys.Wasm)
+		sys.AMD64, sys.I386, sys.ARM, sys.ARM64, sys.Wasm)
 	addF("math/bits", "TrailingZeros8",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			x := s.newValue1(ssa.OpZeroExt8to64, types.Types[types.TUINT64], args[0])
@@ -6378,7 +6391,7 @@ func (s *state) dottype1(pos src.XPos, src, dst *types.Type, iface, source, targ
 			idata := s.newValue1(ssa.OpIData, byteptr, iface)
 			res = s.newValue2(ssa.OpIMake, dst, s.variable(typVar, byteptr), idata)
 			resok = cond
-			delete(s.vars, typVar)
+			delete(s.vars, typVar) // no practical effect, just to indicate typVar is no longer live.
 			return
 		}
 		// converting to a nonempty interface needs a runtime call.
@@ -6503,12 +6516,12 @@ func (s *state) dottype1(pos src.XPos, src, dst *types.Type, iface, source, targ
 	s.startBlock(bEnd)
 	if tmp == nil {
 		res = s.variable(valVar, dst)
-		delete(s.vars, valVar)
+		delete(s.vars, valVar) // no practical effect, just to indicate typVar is no longer live.
 	} else {
 		res = s.load(dst, addr)
 	}
 	resok = s.variable(okVar, types.Types[types.TBOOL])
-	delete(s.vars, okVar)
+	delete(s.vars, okVar) // ditto
 	return res, resok
 }
 
@@ -7171,7 +7184,7 @@ func genssa(f *ssa.Func, pp *objw.Progs) {
 			// This ensures that runtime.FuncForPC(uintptr(reflect.ValueOf(fn).Pointer())).Name()
 			// returns the right answer. See issue 58300.
 			for p := pp.Text; p != nil; p = p.Link {
-				if p.As == obj.AFUNCDATA || p.As == obj.APCDATA || p.As == obj.ATEXT {
+				if p.As == obj.AFUNCDATA || p.As == obj.APCDATA || p.As == obj.ATEXT || p.As == obj.ANOP {
 					continue
 				}
 				if base.Ctxt.PosTable.Pos(p.Pos).Base().InliningIndex() >= 0 {
@@ -7950,10 +7963,9 @@ func clobberBase(n ir.Node) ir.Node {
 // callTargetLSym returns the correct LSym to call 'callee' using its ABI.
 func callTargetLSym(callee *ir.Name) *obj.LSym {
 	if callee.Func == nil {
-		// TODO(austin): This happens in a few cases of
-		// compiler-generated functions. These are all
-		// ABIInternal. It would be better if callee.Func was
-		// never nil and we didn't need this case.
+		// TODO(austin): This happens in case of interface method I.M from imported package.
+		// It's ABIInternal, and would be better if callee.Func was never nil and we didn't
+		// need this case.
 		return callee.Linksym()
 	}
 

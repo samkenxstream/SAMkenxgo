@@ -325,6 +325,10 @@ var optab = []Optab{
 	{as: AADDEX, a1: C_REG, a2: C_REG, a3: C_SCON, a6: C_REG, type_: 94, size: 4}, /* add extended using alternate carry, z23-form */
 	{as: ACRAND, a1: C_CRBIT, a2: C_CRBIT, a6: C_CRBIT, type_: 2, size: 4},        /* logical ops for condition register bits xl-form */
 
+	/* Misc ISA 3.0 instructions */
+	{as: ASETB, a1: C_CREG, a6: C_REG, type_: 110, size: 4},
+	{as: AVCLZLSBB, a1: C_VREG, a6: C_REG, type_: 85, size: 4},
+
 	/* Vector instructions */
 
 	/* Vector load */
@@ -2086,6 +2090,9 @@ func buildop(ctxt *obj.Link) {
 		case AMOVW: /* load/store/move word with sign extension; move 32-bit literals  */
 			opset(AMOVWZ, r0) /* Same as above, but zero extended */
 
+		case AVCLZLSBB:
+			opset(AVCTZLSBB, r0)
+
 		case AADD,
 			AADDIS,
 			AANDCC, /* and. Rb,Rs,Ra; andi. $uimm,Rs,Ra */
@@ -2111,6 +2118,7 @@ func buildop(ctxt *obj.Link) {
 			AMTVSRDD,
 			APNOP,
 			AISEL,
+			ASETB,
 			obj.ANOP,
 			obj.ATEXT,
 			obj.AUNDEF,
@@ -2335,6 +2343,7 @@ const (
 	OP_RLDICL   = 30<<26 | 0<<1 | 0<<10 | 0
 	OP_RLDCL    = 30<<26 | 8<<1 | 0<<10 | 0
 	OP_EXTSWSLI = 31<<26 | 445<<2
+	OP_SETB     = 31<<26 | 128<<1
 )
 
 func pfxadd(rt, ra int16, r uint32, imm32 int64) (uint32, uint32) {
@@ -3279,8 +3288,15 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 			o1 |= uint32((v >> 16) & 0x3FFFF)
 			o2 |= uint32(v & 0xFFFF)
 		} else {
-			o1 = AOP_IRR(OP_ADDIS, uint32(p.To.Reg), uint32(r), uint32(high16adjusted(v)))
-			o2 = AOP_IRR(c.opload(p.As), uint32(p.To.Reg), uint32(p.To.Reg), uint32(v))
+			if o.a6 == C_REG {
+				// Reuse the base register when loading a GPR (C_REG) to avoid
+				// using REGTMP (R31) when possible.
+				o1 = AOP_IRR(OP_ADDIS, uint32(p.To.Reg), uint32(r), uint32(high16adjusted(v)))
+				o2 = AOP_IRR(c.opload(p.As), uint32(p.To.Reg), uint32(p.To.Reg), uint32(v))
+			} else {
+				o1 = AOP_IRR(OP_ADDIS, uint32(REGTMP), uint32(r), uint32(high16adjusted(v)))
+				o2 = AOP_IRR(c.opload(p.As), uint32(p.To.Reg), uint32(REGTMP), uint32(v))
+			}
 		}
 
 		// Sign extend MOVB if needed
@@ -3672,8 +3688,8 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 				rel.Type = objabi.R_ADDRPOWER_TOCREL_DS
 			}
 		default:
-			reuseBaseReg := p.As != AFMOVD && p.As != AFMOVS
-			// Reuse To.Reg as base register if not FP move.
+			reuseBaseReg := o.a6 == C_REG
+			// Reuse To.Reg as base register if it is a GPR.
 			o1, o2, rel = c.symbolAccess(p.From.Sym, v, p.To.Reg, inst, reuseBaseReg)
 		}
 
@@ -3971,6 +3987,11 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 		o1 = AOP_RRR(c.oploadx(p.As), uint32(p.To.Reg), uint32(p.From.Index), uint32(r))
 		// Sign extend MOVB operations. This is ignored for other cases (o.size == 4).
 		o2 = LOP_RRR(OP_EXTSB, uint32(p.To.Reg), uint32(p.To.Reg), 0)
+
+	case 110: /* SETB creg, rt */
+		bfa := uint32(p.From.Reg) << 2
+		rt := uint32(p.To.Reg)
+		o1 = LOP_RRR(OP_SETB, bfa, rt, 0)
 	}
 
 	out[0] = o1
@@ -4773,6 +4794,11 @@ func (c *ctxt9) oprrr(a obj.As) uint32 {
 		return OPVX(4, 1922, 0, 0) /* vclzw - v2.07 */
 	case AVCLZD:
 		return OPVX(4, 1986, 0, 0) /* vclzd - v2.07 */
+
+	case AVCLZLSBB:
+		return OPVX(4, 1538, 0, 0) /* vclzlsbb - v3.0 */
+	case AVCTZLSBB:
+		return OPVX(4, 1538, 0, 0) | 1<<16 /* vctzlsbb - v3.0 */
 
 	case AVPOPCNTB:
 		return OPVX(4, 1795, 0, 0) /* vpopcntb - v2.07 */

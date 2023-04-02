@@ -202,9 +202,11 @@
 //		run through go run and go test respectively.
 //	-pgo file
 //		specify the file path of a profile for profile-guided optimization (PGO).
-//		Special name "auto" lets the go command select a file named
-//		"default.pgo" in the main package's directory if that file exists.
-//		Special name "off" turns off PGO.
+//		When the special name "auto" is specified, for each main package in the
+//		build, the go command selects a file named "default.pgo" in the package's
+//		directory if that file exists, and applies it to the (transitive)
+//		dependencies of the main package (other packages are not affected).
+//		Special name "off" turns off PGO. The default is "auto".
 //	-pkgdir dir
 //		install and load all packages from dir instead of the usual locations.
 //		For example, when building with a non-standard configuration,
@@ -756,7 +758,8 @@
 // Setting GODEBUG=installgoroot=all restores the use of
 // $GOROOT/pkg/$GOOS_$GOARCH.
 //
-// For more about the build flags, see 'go help build'.
+// For more about build flags, see 'go help build'.
+//
 // For more about specifying packages, see 'go help packages'.
 //
 // See also: go build, go get, go clean.
@@ -880,9 +883,9 @@
 //	    GOROOT        string   // Go root
 //	    GOPATH        string   // Go path
 //	    CgoEnabled    bool     // whether cgo can be used
-//	    UseAllFiles   bool     // use files regardless of +build lines, file names
+//	    UseAllFiles   bool     // use files regardless of //go:build lines, file names
 //	    Compiler      string   // compiler to assume when computing target paths
-//	    BuildTags     []string // build constraints to match in +build lines
+//	    BuildTags     []string // build constraints to match in //go:build lines
 //	    ToolTags      []string // toolchain-specific build constraints
 //	    ReleaseTags   []string // releases the current release is compatible with
 //	    InstallSuffix string   // suffix to use in the name of the install dir
@@ -2116,7 +2119,7 @@
 //	GOMODCACHE
 //		The directory where the go command will store downloaded modules.
 //	GODEBUG
-//		Enable various debugging facilities. See 'go doc runtime'
+//		Enable various debugging facilities. See https://go.dev/doc/godebug
 //		for details.
 //	GOENV
 //		The location of the Go environment configuration file.
@@ -2549,6 +2552,8 @@
 // it also updates any git submodules referenced by the repository.
 //
 // Get never checks out or updates code stored in vendor directories.
+//
+// For more about build flags, see 'go help build'.
 //
 // For more about specifying packages, see 'go help packages'.
 //

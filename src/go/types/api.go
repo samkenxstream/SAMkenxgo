@@ -170,6 +170,13 @@ type Config struct {
 	// If DisableUnusedImportCheck is set, packages are not checked
 	// for unused imports.
 	DisableUnusedImportCheck bool
+
+	// If _EnableReverseTypeInference is set, uninstantiated and
+	// partially instantiated generic functions may be assigned
+	// (incl. returned) to variables of function type and type
+	// inference will attempt to infer the missing type arguments.
+	// Experimental. Needs a proposal.
+	_EnableReverseTypeInference bool
 }
 
 func srcimporter_setUsesCgo(conf *Config) {
@@ -428,7 +435,7 @@ func AssertableTo(V *Interface, T Type) bool {
 	if T.Underlying() == Typ[Invalid] {
 		return false
 	}
-	return (*Checker)(nil).newAssertableTo(V, T)
+	return (*Checker)(nil).newAssertableTo(V, T, nil)
 }
 
 // AssignableTo reports whether a value of type V is assignable to a variable

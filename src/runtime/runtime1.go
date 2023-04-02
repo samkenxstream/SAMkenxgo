@@ -309,6 +309,7 @@ type dbgVar struct {
 var debug struct {
 	cgocheck           int32
 	clobberfree        int32
+	dontfreezetheworld int32
 	efence             int32
 	gccheckmark        int32
 	gcpacertrace       int32
@@ -324,6 +325,7 @@ var debug struct {
 	asyncpreemptoff    int32
 	harddecommit       int32
 	adaptivestackstart int32
+	tracefpunwindoff   int32
 
 	// debug.malloc is used as a combined debug check
 	// in the malloc function and should be set
@@ -340,6 +342,7 @@ var dbgvars = []*dbgVar{
 	{name: "allocfreetrace", value: &debug.allocfreetrace},
 	{name: "clobberfree", value: &debug.clobberfree},
 	{name: "cgocheck", value: &debug.cgocheck},
+	{name: "dontfreezetheworld", value: &debug.dontfreezetheworld},
 	{name: "efence", value: &debug.efence},
 	{name: "gccheckmark", value: &debug.gccheckmark},
 	{name: "gcpacertrace", value: &debug.gcpacertrace},
@@ -357,6 +360,7 @@ var dbgvars = []*dbgVar{
 	{name: "inittrace", value: &debug.inittrace},
 	{name: "harddecommit", value: &debug.harddecommit},
 	{name: "adaptivestackstart", value: &debug.adaptivestackstart},
+	{name: "tracefpunwindoff", value: &debug.tracefpunwindoff},
 	{name: "panicnil", atomic: &debug.panicnil},
 }
 

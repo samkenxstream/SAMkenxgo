@@ -47,6 +47,9 @@ var NetpollGenericInit = netpollGenericInit
 var Memmove = memmove
 var MemclrNoHeapPointers = memclrNoHeapPointers
 
+const TracebackInnerFrames = tracebackInnerFrames
+const TracebackOuterFrames = tracebackOuterFrames
+
 var LockPartialOrder = lockPartialOrder
 
 type LockRank lockRank
@@ -483,7 +486,9 @@ func LockOSCounts() (external, internal uint32) {
 func TracebackSystemstack(stk []uintptr, i int) int {
 	if i == 0 {
 		pc, sp := getcallerpc(), getcallersp()
-		return gentraceback(pc, sp, 0, getg(), 0, &stk[0], len(stk), nil, nil, _TraceJumpStack)
+		var u unwinder
+		u.initAt(pc, sp, 0, getg(), unwindJumpStack) // Don't ignore errors, for testing
+		return tracebackPCs(&u, 0, stk)
 	}
 	n := 0
 	systemstack(func() {
@@ -1721,4 +1726,10 @@ func FrameStartLine(f *Frame) int {
 // This memory will never be freed; use sparingly.
 func PersistentAlloc(n uintptr) unsafe.Pointer {
 	return persistentalloc(n, 0, &memstats.other_sys)
+}
+
+// FPCallers works like Callers and uses frame pointer unwinding to populate
+// pcBuf with the return addresses of the physical frames on the stack.
+func FPCallers(skip int, pcBuf []uintptr) int {
+	return fpTracebackPCs(unsafe.Pointer(getcallerfp()), skip, pcBuf)
 }

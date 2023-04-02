@@ -83,8 +83,14 @@ TEXT runtime·asminit(SB),NOSPLIT|NOFRAME,$0-0
 	RET
 
 TEXT runtime·mstart(SB),NOSPLIT|TOPFRAME,$0
-        JAL     runtime·mstart0(SB)
-        RET // not reached
+	JAL     runtime·mstart0(SB)
+	RET // not reached
+
+// func cputicks() int64
+TEXT runtime·cputicks(SB),NOSPLIT,$0-8
+	RDTIMED	R0, R4
+	MOVV	R4, ret+0(FP)
+	RET
 
 /*
  *  go-routine
@@ -122,7 +128,6 @@ TEXT runtime·mcall(SB), NOSPLIT|NOFRAME, $0-8
 	MOVV	R3, (g_sched+gobuf_sp)(g)
 	MOVV	R1, (g_sched+gobuf_pc)(g)
 	MOVV	R0, (g_sched+gobuf_lr)(g)
-	MOVV	g, (g_sched+gobuf_g)(g)
 
 	// Switch to m->g0 & its stack, call fn.
 	MOVV	g, R19
@@ -180,10 +185,6 @@ switch:
 	MOVV	R5, g
 	JAL	runtime·save_g(SB)
 	MOVV	(g_sched+gobuf_sp)(g), R19
-	// make it look like mstart called systemstack on g0, to stop traceback
-	ADDV	$-8, R19
-	MOVV	$runtime·mstart(SB), R6
-	MOVV	R6, 0(R19)
 	MOVV	R19, R3
 
 	// call target function
@@ -260,6 +261,13 @@ TEXT runtime·morestack(SB),NOSPLIT|NOFRAME,$0-0
 	UNDEF
 
 TEXT runtime·morestack_noctxt(SB),NOSPLIT|NOFRAME,$0-0
+	// Force SPWRITE. This function doesn't actually write SP,
+	// but it is called with a special calling convention where
+	// the caller doesn't save LR on stack but passes it as a
+	// register (R5), and the unwinder currently doesn't understand.
+	// Make it SPWRITE to stop unwinding. (See issue 54332)
+	MOVV    R3, R3
+
 	MOVV	R0, REGCTXT
 	JMP	runtime·morestack(SB)
 
@@ -605,10 +613,10 @@ TEXT _cgo_topofstack(SB),NOSPLIT,$16
 // The top-most function running on a goroutine
 // returns to goexit+PCQuantum.
 TEXT runtime·goexit(SB),NOSPLIT|NOFRAME|TOPFRAME,$0-0
-	NOR	R0, R0	// NOP
+	NOOP
 	JAL	runtime·goexit1(SB)	// does not return
 	// traceback from goexit1 must hit code range of goexit
-	NOR	R0, R0	// NOP
+	NOOP
 
 TEXT ·checkASM(SB),NOSPLIT,$0-1
 	MOVW	$1, R19

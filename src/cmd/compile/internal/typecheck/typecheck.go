@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go/constant"
 	"go/token"
+	"internal/types/errors"
 	"strings"
 
 	"cmd/compile/internal/base"
@@ -286,7 +287,7 @@ func typecheck(n ir.Node, top int) (res ir.Node) {
 						return n
 					}
 				}
-				base.ErrorfAt(n.Pos(), "invalid recursive type alias %v%s", n, cycleTrace(cycle))
+				base.ErrorfAt(n.Pos(), errors.InvalidDeclCycle, "invalid recursive type alias %v%s", n, cycleTrace(cycle))
 			}
 
 		case ir.OLITERAL:
@@ -294,7 +295,7 @@ func typecheck(n ir.Node, top int) (res ir.Node) {
 				base.Errorf("%v is not a type", n)
 				break
 			}
-			base.ErrorfAt(n.Pos(), "constant definition loop%s", cycleTrace(cycleFor(n)))
+			base.ErrorfAt(n.Pos(), errors.InvalidInitCycle, "constant definition loop%s", cycleTrace(cycleFor(n)))
 		}
 
 		if base.Errors() == 0 {
@@ -888,7 +889,7 @@ func RewriteNonNameCall(n *ir.CallExpr) {
 
 	tmp := Temp((*np).Type())
 	as := ir.NewAssignStmt(base.Pos, tmp, *np)
-	as.Def = true
+	as.PtrInit().Append(Stmt(ir.NewDecl(n.Pos(), ir.ODCL, tmp)))
 	*np = tmp
 
 	if static {
@@ -1605,7 +1606,7 @@ func stringtoruneslit(n *ir.ConvExpr) ir.Node {
 	var l []ir.Node
 	i := 0
 	for _, r := range ir.StringVal(n.X) {
-		l = append(l, ir.NewKeyExpr(base.Pos, ir.NewInt(int64(i)), ir.NewInt(int64(r))))
+		l = append(l, ir.NewKeyExpr(base.Pos, ir.NewInt(base.Pos, int64(i)), ir.NewInt(base.Pos, int64(r))))
 		i++
 	}
 

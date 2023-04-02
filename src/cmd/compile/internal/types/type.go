@@ -8,6 +8,7 @@ import (
 	"cmd/compile/internal/base"
 	"cmd/internal/src"
 	"fmt"
+	"internal/types/errors"
 	"sync"
 )
 
@@ -1663,7 +1664,7 @@ func (t *Type) SetUnderlying(underlying *Type) {
 	// Double-check use of type as embedded type.
 	if ft.Embedlineno.IsKnown() {
 		if t.IsPtr() || t.IsUnsafePtr() {
-			base.ErrorfAt(ft.Embedlineno, "embedded type cannot be a pointer")
+			base.ErrorfAt(ft.Embedlineno, errors.InvalidPtrEmbed, "embedded type cannot be a pointer")
 		}
 	}
 }
@@ -1855,6 +1856,11 @@ func IsRuntimePkg(p *Pkg) bool {
 // IsReflectPkg reports whether p is package reflect.
 func IsReflectPkg(p *Pkg) bool {
 	return p.Path == "reflect"
+}
+
+// IsTypePkg reports whether p is pesudo package type.
+func IsTypePkg(p *Pkg) bool {
+	return p == typepkg
 }
 
 // ReceiverBaseType returns the underlying type, if any,
