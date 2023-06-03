@@ -30,6 +30,7 @@ const (
 //go:cgo_import_dynamic runtime._GetConsoleMode GetConsoleMode%2 "kernel32.dll"
 //go:cgo_import_dynamic runtime._GetCurrentThreadId GetCurrentThreadId%0 "kernel32.dll"
 //go:cgo_import_dynamic runtime._GetEnvironmentStringsW GetEnvironmentStringsW%0 "kernel32.dll"
+//go:cgo_import_dynamic runtime._GetErrorMode GetErrorMode%0 "kernel32.dll"
 //go:cgo_import_dynamic runtime._GetProcAddress GetProcAddress%2 "kernel32.dll"
 //go:cgo_import_dynamic runtime._GetProcessAffinityMask GetProcessAffinityMask%3 "kernel32.dll"
 //go:cgo_import_dynamic runtime._GetQueuedCompletionStatusEx GetQueuedCompletionStatusEx%6 "kernel32.dll"
@@ -41,6 +42,7 @@ const (
 //go:cgo_import_dynamic runtime._LoadLibraryExW LoadLibraryExW%3 "kernel32.dll"
 //go:cgo_import_dynamic runtime._LoadLibraryW LoadLibraryW%1 "kernel32.dll"
 //go:cgo_import_dynamic runtime._PostQueuedCompletionStatus PostQueuedCompletionStatus%4 "kernel32.dll"
+//go:cgo_import_dynamic runtime._RaiseFailFastException RaiseFailFastException%3 "kernel32.dll"
 //go:cgo_import_dynamic runtime._ResumeThread ResumeThread%1 "kernel32.dll"
 //go:cgo_import_dynamic runtime._SetConsoleCtrlHandler SetConsoleCtrlHandler%2 "kernel32.dll"
 //go:cgo_import_dynamic runtime._SetErrorMode SetErrorMode%1 "kernel32.dll"
@@ -49,7 +51,6 @@ const (
 //go:cgo_import_dynamic runtime._SetThreadPriority SetThreadPriority%2 "kernel32.dll"
 //go:cgo_import_dynamic runtime._SetUnhandledExceptionFilter SetUnhandledExceptionFilter%1 "kernel32.dll"
 //go:cgo_import_dynamic runtime._SetWaitableTimer SetWaitableTimer%6 "kernel32.dll"
-//go:cgo_import_dynamic runtime._Sleep Sleep%1 "kernel32.dll"
 //go:cgo_import_dynamic runtime._SuspendThread SuspendThread%1 "kernel32.dll"
 //go:cgo_import_dynamic runtime._SwitchToThread SwitchToThread%0 "kernel32.dll"
 //go:cgo_import_dynamic runtime._TlsAlloc TlsAlloc%0 "kernel32.dll"
@@ -58,6 +59,8 @@ const (
 //go:cgo_import_dynamic runtime._VirtualQuery VirtualQuery%3 "kernel32.dll"
 //go:cgo_import_dynamic runtime._WaitForSingleObject WaitForSingleObject%2 "kernel32.dll"
 //go:cgo_import_dynamic runtime._WaitForMultipleObjects WaitForMultipleObjects%4 "kernel32.dll"
+//go:cgo_import_dynamic runtime._WerGetFlags WerGetFlags%2 "kernel32.dll"
+//go:cgo_import_dynamic runtime._WerSetFlags WerSetFlags%1 "kernel32.dll"
 //go:cgo_import_dynamic runtime._WriteConsoleW WriteConsoleW%5 "kernel32.dll"
 //go:cgo_import_dynamic runtime._WriteFile WriteFile%5 "kernel32.dll"
 
@@ -81,6 +84,7 @@ var (
 	_GetConsoleMode,
 	_GetCurrentThreadId,
 	_GetEnvironmentStringsW,
+	_GetErrorMode,
 	_GetProcAddress,
 	_GetProcessAffinityMask,
 	_GetQueuedCompletionStatusEx,
@@ -95,6 +99,7 @@ var (
 	_PostQueuedCompletionStatus,
 	_QueryPerformanceCounter,
 	_QueryPerformanceFrequency,
+	_RaiseFailFastException,
 	_ResumeThread,
 	_SetConsoleCtrlHandler,
 	_SetErrorMode,
@@ -103,7 +108,6 @@ var (
 	_SetThreadPriority,
 	_SetUnhandledExceptionFilter,
 	_SetWaitableTimer,
-	_Sleep,
 	_SuspendThread,
 	_SwitchToThread,
 	_TlsAlloc,
@@ -112,6 +116,8 @@ var (
 	_VirtualQuery,
 	_WaitForSingleObject,
 	_WaitForMultipleObjects,
+	_WerGetFlags,
+	_WerSetFlags,
 	_WriteConsoleW,
 	_WriteFile,
 	_ stdFunction
@@ -192,11 +198,6 @@ type mOS struct {
 	// tightly synchronized on the G/P status and preemption
 	// blocked transition into _Gsyscall/_Psyscall.
 	preemptExtLock uint32
-}
-
-//go:linkname os_sigpipe os.sigpipe
-func os_sigpipe() {
-	throw("too many writes on closed pipe")
 }
 
 // Stubs so tests can link correctly. These should never be called.
@@ -521,7 +522,7 @@ func osinit() {
 
 	loadOptionalSyscalls()
 
-	disableWER()
+	preventErrorDialogs()
 
 	initExceptionHandler()
 
@@ -987,7 +988,7 @@ func minit() {
 		throw("bad g0 stack")
 	}
 	g0.stack.lo = base
-	g0.stackguard0 = g0.stack.lo + _StackGuard
+	g0.stackguard0 = g0.stack.lo + stackGuard
 	g0.stackguard1 = g0.stackguard0
 	// Sanity check the SP.
 	stackcheck()

@@ -106,7 +106,9 @@ are also treated as invalid.
 The defaults that will be compiled into a main package
 are reported by the command:
 
+{{raw `
 	go list -f '{{.DefaultGODEBUG}}' my/main/package
+`}}
 
 Only differences from the base Go toolchain defaults are reported.
 
@@ -128,7 +130,19 @@ and the [go command documentation](/cmd/go#hdr-Build_and_test_caching).
 
 Go 1.21 made it a run-time error to call `panic` with a nil interface value,
 controlled by the [`panicnil` setting](/pkg/builtin/#panic).
-There is no plan to remove this setting.
+
+Go 1.21 made it an error for html/template actions to appear inside of an ECMAScript 6
+template literal, controlled by the
+[`jstmpllitinterp` setting](/pkg/html/template#hdr-Security_Model).
+This behavior was backported to Go 1.19.8+ and Go 1.20.3+.
+
+Go 1.21 introduced a limit on the maximum number of MIME headers and multipart
+forms, controlled by the
+[`multipartmaxheaders` and `multipartmaxparts` settings](/pkg/mime/multipart#hdr-Limits)
+respectively.
+This behavior was backported to Go 1.19.8+ and Go 1.20.3+.
+
+There is no plan to remove any of these settings.
 
 ### Go 1.20
 
@@ -167,6 +181,12 @@ There is no plan to remove this setting.
 Go 1.18 removed support for SHA1 in most X.509 certificates,
 controlled by the [`x509sha1` setting](/crypto/x509#InsecureAlgorithmError).
 This setting will be removed in a future release, Go 1.22 at the earliest.
+
+### Go 1.10
+
+Go 1.10 changed how build caching worked and added test caching, along
+with the [`gocacheverify`, `gocachehash`, and `gocachetest` settings](/cmd/go/#hdr-Build_and_test_caching).
+There is no plan to remove these settings.
 
 ### Go 1.6
 

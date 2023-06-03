@@ -158,11 +158,13 @@ It is a comma-separated list of name=val pairs setting these named variables:
 	scavenger as well as the total amount of memory returned to the operating system
 	and an estimate of physical memory utilization. The format of this line is subject
 	to change, but currently it is:
-		scav # KiB work, # KiB total, #% util
+		scav # KiB work (bg), # KiB work (eager), # KiB total, #% util
 	where the fields are as follows:
-		# KiB work   the amount of memory returned to the OS since the last line
-		# KiB total  the total amount of memory returned to the OS
-		#% util      the fraction of all unscavenged memory which is in-use
+		# KiB work (bg)    the amount of memory returned to the OS in the background since
+		                   the last line
+		# KiB work (eager) the amount of memory returned to the OS eagerly since the last line
+		# KiB now          the amount of address space currently returned to the OS
+		#% util            the fraction of all unscavenged heap memory which is in-use
 	If the line ends with "(forced)", then scavenging was forced by a
 	debug.FreeOSMemory() call.
 
@@ -217,6 +219,7 @@ and shows goroutines created internally by the run-time.
 GOTRACEBACK=crash is like “system” but crashes in an operating system-specific
 manner instead of exiting. For example, on Unix systems, the crash raises
 SIGABRT to trigger a core dump.
+GOTRACEBACK=wer is like “crash” but doesn't disable Windows Error Reporting (WER).
 For historical reasons, the GOTRACEBACK settings 0, 1, and 2 are synonyms for
 none, all, and system, respectively.
 The runtime/debug package's SetTraceback function allows increasing the

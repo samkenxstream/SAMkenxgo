@@ -5,6 +5,7 @@
 package runtime
 
 import (
+	"internal/abi"
 	"internal/goarch"
 	"runtime/internal/atomic"
 	"runtime/internal/sys"
@@ -470,35 +471,34 @@ type g struct {
 	// for stack shrinking.
 	parkingOnChan atomic.Bool
 
-	raceignore     int8     // ignore race detection events
-	sysblocktraced bool     // StartTrace has emitted EvGoInSyscall about this goroutine
-	tracking       bool     // whether we're tracking this G for sched latency statistics
-	trackingSeq    uint8    // used to decide whether to track this G
-	trackingStamp  int64    // timestamp of when the G last started being tracked
-	runnableTime   int64    // the amount of time spent runnable, cleared when running, only used when tracking
-	sysexitticks   int64    // cputicks when syscall has returned (for tracing)
-	traceseq       uint64   // trace event sequencer
-	tracelastp     puintptr // last P emitted an event for this goroutine
-	lockedm        muintptr
-	sig            uint32
-	writebuf       []byte
-	sigcode0       uintptr
-	sigcode1       uintptr
-	sigpc          uintptr
-	parentGoid     uint64          // goid of goroutine that created this goroutine
-	gopc           uintptr         // pc of go statement that created this goroutine
-	ancestors      *[]ancestorInfo // ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)
-	startpc        uintptr         // pc of goroutine function
-	racectx        uintptr
-	waiting        *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
-	cgoCtxt        []uintptr      // cgo traceback context
-	labels         unsafe.Pointer // profiler labels
-	timer          *timer         // cached timer for time.Sleep
-	selectDone     atomic.Uint32  // are we participating in a select and did someone win the race?
+	raceignore    int8  // ignore race detection events
+	tracking      bool  // whether we're tracking this G for sched latency statistics
+	trackingSeq   uint8 // used to decide whether to track this G
+	trackingStamp int64 // timestamp of when the G last started being tracked
+	runnableTime  int64 // the amount of time spent runnable, cleared when running, only used when tracking
+	lockedm       muintptr
+	sig           uint32
+	writebuf      []byte
+	sigcode0      uintptr
+	sigcode1      uintptr
+	sigpc         uintptr
+	parentGoid    uint64          // goid of goroutine that created this goroutine
+	gopc          uintptr         // pc of go statement that created this goroutine
+	ancestors     *[]ancestorInfo // ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)
+	startpc       uintptr         // pc of goroutine function
+	racectx       uintptr
+	waiting       *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
+	cgoCtxt       []uintptr      // cgo traceback context
+	labels        unsafe.Pointer // profiler labels
+	timer         *timer         // cached timer for time.Sleep
+	selectDone    atomic.Uint32  // are we participating in a select and did someone win the race?
 
 	// goroutineProfiled indicates the status of this goroutine's stack for the
 	// current in-progress goroutine profile
 	goroutineProfiled goroutineProfileStateHolder
+
+	// Per-G tracer state.
+	trace gTraceState
 
 	// Per-G GC state
 
@@ -561,6 +561,7 @@ type m struct {
 	printlock     int8
 	incgo         bool          // m is executing a cgo call
 	isextra       bool          // m is an extra m
+	isExtraInC    bool          // m is an extra m that is not executing Go code
 	freeWait      atomic.Uint32 // Whether it is safe to free g0 and delete m (one of freeMRef, freeMStack, freeMWait)
 	fastrand      uint64
 	needextram    bool
@@ -577,13 +578,17 @@ type m struct {
 	lockedExt     uint32      // tracking for external LockOSThread
 	lockedInt     uint32      // tracking for internal lockOSThread
 	nextwaitm     muintptr    // next m waiting for lock
-	waitunlockf   func(*g, unsafe.Pointer) bool
-	waitlock      unsafe.Pointer
-	waittraceev   byte
-	waittraceskip int
-	startingtrace bool
-	syscalltick   uint32
-	freelink      *m // on sched.freem
+
+	// wait* are used to carry arguments from gopark into park_m, because
+	// there's no stack to put them on. That is their sole purpose.
+	waitunlockf          func(*g, unsafe.Pointer) bool
+	waitlock             unsafe.Pointer
+	waitTraceBlockReason traceBlockReason
+	waitTraceSkip        int
+
+	syscalltick uint32
+	freelink    *m // on sched.freem
+	trace       mTraceState
 
 	// these are here because they are too large to be on the stack
 	// of low-level NOSPLIT functions.
@@ -664,21 +669,17 @@ type p struct {
 		// We need an explicit length here because this field is used
 		// in allocation codepaths where write barriers are not allowed,
 		// and eliminating the write barrier/keeping it eliminated from
-		// slice updates is tricky, moreso than just managing the length
+		// slice updates is tricky, more so than just managing the length
 		// ourselves.
 		len int
 		buf [128]*mspan
 	}
 
-	tracebuf traceBufPtr
+	// Cache of a single pinner object to reduce allocations from repeated
+	// pinner creation.
+	pinnerCache *pinner
 
-	// traceSweep indicates the sweep events should be traced.
-	// This is used to defer the sweep start event until a span
-	// has actually been swept.
-	traceSweep bool
-	// traceSwept and traceReclaimed track the number of bytes
-	// swept and reclaimed by sweeping in the current sweep loop.
-	traceSwept, traceReclaimed uintptr
+	trace pTraceState
 
 	palloc persistentAlloc // per-P to avoid mutex
 
@@ -899,10 +900,10 @@ type _func struct {
 	pcfile    uint32
 	pcln      uint32
 	npcdata   uint32
-	cuOffset  uint32 // runtime.cutab offset of this function's CU
-	startLine int32  // line number of start of function (func keyword/TEXT directive)
-	funcID    funcID // set for certain special runtime functions
-	flag      funcFlag
+	cuOffset  uint32     // runtime.cutab offset of this function's CU
+	startLine int32      // line number of start of function (func keyword/TEXT directive)
+	funcID    abi.FuncID // set for certain special runtime functions
+	flag      abi.FuncFlag
 	_         [1]byte // pad
 	nfuncdata uint8   // must be last, must end on a uint32-aligned boundary
 

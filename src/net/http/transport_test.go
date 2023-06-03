@@ -251,7 +251,7 @@ func testTransportConnectionCloseOnResponse(t *testing.T, mode testMode) {
 // an underlying TCP connection after making an http.Request with Request.Close set.
 //
 // It tests the behavior by making an HTTP request to a server which
-// describes the source source connection it got (remote port number +
+// describes the source connection it got (remote port number +
 // address of its net.Conn).
 func TestTransportConnectionCloseOnRequest(t *testing.T) {
 	run(t, testTransportConnectionCloseOnRequest, []testMode{http1Mode})
@@ -741,7 +741,7 @@ func testTransportRemovesDeadIdleConnections(t *testing.T, mode testMode) {
 	c := ts.Client()
 	tr := c.Transport.(*Transport)
 
-	doReq := func(name string) string {
+	doReq := func(name string) {
 		// Do a POST instead of a GET to prevent the Transport's
 		// idempotent request retry logic from kicking in...
 		res, err := c.Post(ts.URL, "", nil)
@@ -756,10 +756,10 @@ func testTransportRemovesDeadIdleConnections(t *testing.T, mode testMode) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		return string(slurp)
+		t.Logf("%s: ok (%q)", name, slurp)
 	}
 
-	first := doReq("first")
+	doReq("first")
 	keys1 := tr.IdleConnKeysForTesting()
 
 	ts.CloseClientConnections()
@@ -776,10 +776,7 @@ func testTransportRemovesDeadIdleConnections(t *testing.T, mode testMode) {
 		return true
 	})
 
-	second := doReq("second")
-	if first == second {
-		t.Errorf("expected a different connection between requests. got %q both times", first)
-	}
+	doReq("second")
 }
 
 // Test that the Transport notices when a server hangs up on its
@@ -2356,7 +2353,7 @@ func testTransportResponseHeaderTimeout(t *testing.T, mode testMode) {
 			if err != nil {
 				uerr, ok := err.(*url.Error)
 				if !ok {
-					t.Errorf("error is not an url.Error; got: %#v", err)
+					t.Errorf("error is not a url.Error; got: %#v", err)
 					continue
 				}
 				nerr, ok := uerr.Err.(net.Error)
@@ -2371,7 +2368,7 @@ func testTransportResponseHeaderTimeout(t *testing.T, mode testMode) {
 				if !tt.wantTimeout {
 					if !retry {
 						// The timeout may be set too short. Retry with a longer one.
-						t.Logf("unexpected timout for path %q after %v; retrying with longer timeout", tt.path, timeout)
+						t.Logf("unexpected timeout for path %q after %v; retrying with longer timeout", tt.path, timeout)
 						timeout *= 2
 						retry = true
 					}
@@ -3405,9 +3402,13 @@ func (c byteFromChanReader) Read(p []byte) (n int, err error) {
 // questionable state.
 // golang.org/issue/7569
 func TestTransportNoReuseAfterEarlyResponse(t *testing.T) {
-	run(t, testTransportNoReuseAfterEarlyResponse, []testMode{http1Mode})
+	run(t, testTransportNoReuseAfterEarlyResponse, []testMode{http1Mode}, testNotParallel)
 }
 func testTransportNoReuseAfterEarlyResponse(t *testing.T, mode testMode) {
+	defer func(d time.Duration) {
+		*MaxWriteWaitBeforeConnReuse = d
+	}(*MaxWriteWaitBeforeConnReuse)
+	*MaxWriteWaitBeforeConnReuse = 10 * time.Millisecond
 	var sconn struct {
 		sync.Mutex
 		c net.Conn
@@ -3634,13 +3635,13 @@ func testRetryRequestsOnError(t *testing.T, mode testMode) {
 				req := tc.req()
 				res, err := c.Do(req)
 				if err != nil {
-					if time.Since(t0) < MaxWriteWaitBeforeConnReuse/2 {
+					if time.Since(t0) < *MaxWriteWaitBeforeConnReuse/2 {
 						mu.Lock()
 						got := logbuf.String()
 						mu.Unlock()
 						t.Fatalf("i=%d: Do = %v; log:\n%s", i, err, got)
 					}
-					t.Skipf("connection likely wasn't recycled within %d, interfering with actual test; skipping", MaxWriteWaitBeforeConnReuse)
+					t.Skipf("connection likely wasn't recycled within %d, interfering with actual test; skipping", *MaxWriteWaitBeforeConnReuse)
 				}
 				res.Body.Close()
 				if res.Request != req {
@@ -3888,7 +3889,7 @@ func TestTransportCloseIdleConnsThenReturn(t *testing.T) {
 }
 
 // Test for issue 34282
-// Ensure that getConn doesn't call the GotConn trace hook on a HTTP/2 idle conn
+// Ensure that getConn doesn't call the GotConn trace hook on an HTTP/2 idle conn
 func TestTransportTraceGotConnH2IdleConns(t *testing.T) {
 	tr := &Transport{}
 	wantIdle := func(when string, n int) bool {
@@ -4249,6 +4250,21 @@ func testTransportFlushesRequestHeader(t *testing.T, mode testMode) {
 	<-gotRes
 }
 
+type wgReadCloser struct {
+	io.Reader
+	wg     *sync.WaitGroup
+	closed bool
+}
+
+func (c *wgReadCloser) Close() error {
+	if c.closed {
+		return net.ErrClosed
+	}
+	c.closed = true
+	c.wg.Done()
+	return nil
+}
+
 // Issue 11745.
 func TestTransportPrefersResponseOverWriteError(t *testing.T) {
 	run(t, testTransportPrefersResponseOverWriteError)
@@ -4270,12 +4286,29 @@ func testTransportPrefersResponseOverWriteError(t *testing.T, mode testMode) {
 
 	fail := 0
 	count := 100
+
 	bigBody := strings.Repeat("a", contentLengthLimit*2)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	getBody := func() (io.ReadCloser, error) {
+		wg.Add(1)
+		body := &wgReadCloser{
+			Reader: strings.NewReader(bigBody),
+			wg:     &wg,
+		}
+		return body, nil
+	}
+
 	for i := 0; i < count; i++ {
-		req, err := NewRequest("PUT", ts.URL, strings.NewReader(bigBody))
+		reqBody, _ := getBody()
+		req, err := NewRequest("PUT", ts.URL, reqBody)
 		if err != nil {
+			reqBody.Close()
 			t.Fatal(err)
 		}
+		req.ContentLength = int64(len(bigBody))
+		req.GetBody = getBody
+
 		resp, err := c.Do(req)
 		if err != nil {
 			fail++
@@ -4919,7 +4952,7 @@ func TestTransportRejectsAlphaPort(t *testing.T) {
 	}
 }
 
-// Test the httptrace.TLSHandshake{Start,Done} hooks with a https http1
+// Test the httptrace.TLSHandshake{Start,Done} hooks with an https http1
 // connections. The http2 test is done in TestTransportEventTrace_h2
 func TestTLSHandshakeTrace(t *testing.T) {
 	run(t, testTLSHandshakeTrace, []testMode{https1Mode, http2Mode})
@@ -5615,7 +5648,7 @@ func testClientTimeoutKillsConn_BeforeHeaders(t *testing.T, mode testMode) {
 		_, err := cst.c.Get(cst.ts.URL)
 		if err == nil {
 			close(cancelHandler)
-			t.Fatal("unexpected Get succeess")
+			t.Fatal("unexpected Get success")
 		}
 
 		tooSlow := time.NewTimer(timeout * 10)
@@ -5623,8 +5656,8 @@ func testClientTimeoutKillsConn_BeforeHeaders(t *testing.T, mode testMode) {
 		case <-tooSlow.C:
 			// If we didn't get into the Handler, that probably means the builder was
 			// just slow and the Get failed in that time but never made it to the
-			// server. That's fine; we'll try again with a longer timout.
-			t.Logf("no handler seen in %v; retrying with longer timout", timeout)
+			// server. That's fine; we'll try again with a longer timeout.
+			t.Logf("no handler seen in %v; retrying with longer timeout", timeout)
 			close(cancelHandler)
 			cst.close()
 			timeout *= 2

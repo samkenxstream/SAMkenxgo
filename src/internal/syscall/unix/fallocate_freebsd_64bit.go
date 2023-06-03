@@ -8,13 +8,12 @@ package unix
 
 import "syscall"
 
-// FreeBSD posix_fallocate system call number.
-const posixFallocateTrap uintptr = 530
-
 func PosixFallocate(fd int, off int64, size int64) error {
-	_, _, errno := syscall.Syscall(posixFallocateTrap, uintptr(fd), uintptr(off), uintptr(size))
-	if errno != 0 {
-		return errno
+	// If successful, posix_fallocate() returns zero. It returns an error on failure, without
+	// setting errno. See https://man.freebsd.org/cgi/man.cgi?query=posix_fallocate&sektion=2&n=1
+	r1, _, _ := syscall.Syscall(posixFallocateTrap, uintptr(fd), uintptr(off), uintptr(size))
+	if r1 != 0 {
+		return syscall.Errno(r1)
 	}
 	return nil
 }

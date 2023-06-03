@@ -16,10 +16,8 @@ func ExampleGroup() {
 	r, _ := http.NewRequest("GET", "localhost", nil)
 	// ...
 
-	logger := slog.New(slog.HandlerOptions{ReplaceAttr: slogtest.RemoveTime}.NewTextHandler(os.Stdout))
-	slog.SetDefault(logger)
-
-	slog.Info("finished",
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{ReplaceAttr: slogtest.RemoveTime}))
+	logger.Info("finished",
 		slog.Group("req",
 			slog.String("method", r.Method),
 			slog.String("url", r.URL.String())),

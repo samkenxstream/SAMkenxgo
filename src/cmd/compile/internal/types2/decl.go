@@ -416,20 +416,6 @@ func (check *Checker) constDecl(obj *Const, typ, init syntax.Expr, inherited boo
 func (check *Checker) varDecl(obj *Var, lhs []*Var, typ, init syntax.Expr) {
 	assert(obj.typ == nil)
 
-	// If we have undefined variable types due to errors,
-	// mark variables as used to avoid follow-on errors.
-	// Matches compiler behavior.
-	defer func() {
-		if obj.typ == Typ[Invalid] {
-			obj.used = true
-		}
-		for _, lhs := range lhs {
-			if lhs.typ == Typ[Invalid] {
-				lhs.used = true
-			}
-		}
-	}()
-
 	// determine type, if any
 	if typ != nil {
 		obj.typ = check.varType(typ)
@@ -506,9 +492,7 @@ func (check *Checker) typeDecl(obj *TypeName, tdecl *syntax.TypeDecl, def *Named
 			check.validType(t)
 		}
 		// If typ is local, an error was already reported where typ is specified/defined.
-		if check.isImportedConstraint(rhs) && !check.allowVersion(check.pkg, 1, 18) {
-			check.versionErrorf(tdecl.Type, "go1.18", "using type constraint %s", rhs)
-		}
+		_ = check.isImportedConstraint(rhs) && check.verifyVersionf(tdecl.Type, go1_18, "using type constraint %s", rhs)
 	}).describef(obj, "validType(%s)", obj.Name())
 
 	alias := tdecl.Alias
@@ -521,10 +505,7 @@ func (check *Checker) typeDecl(obj *TypeName, tdecl *syntax.TypeDecl, def *Named
 
 	// alias declaration
 	if alias {
-		if !check.allowVersion(check.pkg, 1, 9) {
-			check.versionErrorf(tdecl, "go1.9", "type aliases")
-		}
-
+		check.verifyVersionf(tdecl, go1_9, "type aliases")
 		check.brokenAlias(obj)
 		rhs = check.typ(tdecl.Type)
 		check.validAlias(obj, rhs)

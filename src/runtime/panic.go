@@ -5,6 +5,7 @@
 package runtime
 
 import (
+	"internal/abi"
 	"internal/goarch"
 	"runtime/internal/atomic"
 	"runtime/internal/sys"
@@ -572,7 +573,7 @@ func preprintpanics(p *_panic) {
 		case string:
 			throw(text + ": " + r)
 		default:
-			throw(text + ": type " + efaceOf(&r)._type.string())
+			throw(text + ": type " + toRType(efaceOf(&r)._type).string())
 		}
 	}()
 	for p != nil {
@@ -653,7 +654,7 @@ func addOneOpenDeferFrame(gp *g, pc uintptr, sp unsafe.Pointer) {
 				continue
 			}
 			f := frame.fn
-			fd := funcdata(f, _FUNCDATA_OpenCodedDeferInfo)
+			fd := funcdata(f, abi.FUNCDATA_OpenCodedDeferInfo)
 			if fd == nil {
 				continue
 			}
@@ -1400,5 +1401,5 @@ func isAbortPC(pc uintptr) bool {
 	if !f.valid() {
 		return false
 	}
-	return f.funcID == funcID_abort
+	return f.funcID == abi.FuncID_abort
 }

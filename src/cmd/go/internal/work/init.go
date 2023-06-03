@@ -37,7 +37,7 @@ func BuildInit() {
 	instrumentInit()
 	buildModeInit()
 	if err := fsys.Init(base.Cwd()); err != nil {
-		base.Fatalf("go: %v", err)
+		base.Fatal(err)
 	}
 
 	// Make sure -pkgdir is absolute, because we run commands
@@ -283,7 +283,7 @@ func buildModeInit() {
 		base.Fatalf("buildmode=%s not supported", cfg.BuildBuildmode)
 	}
 
-	if !platform.BuildModeSupported(cfg.BuildToolchainName, cfg.BuildBuildmode, cfg.Goos, cfg.Goarch) {
+	if cfg.BuildBuildmode != "default" && !platform.BuildModeSupported(cfg.BuildToolchainName, cfg.BuildBuildmode, cfg.Goos, cfg.Goarch) {
 		base.Fatalf("-buildmode=%s not supported on %s/%s\n", cfg.BuildBuildmode, cfg.Goos, cfg.Goarch)
 	}
 
@@ -396,7 +396,7 @@ func compilerVersion() (version, error) {
 }
 
 // compilerRequiredAsanVersion is a copy of the function defined in
-// misc/cgo/testsanitizers/cc_test.go
+// cmd/cgo/internal/testsanitizers/cc_test.go
 // compilerRequiredAsanVersion reports whether the compiler is the version
 // required by Asan.
 func compilerRequiredAsanVersion() error {
