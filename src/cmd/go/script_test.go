@@ -246,6 +246,8 @@ func scriptEnv(srv *vcstest.Server, srvCertFile string) ([]string, error) {
 		"goversion=" + version,
 		"CMDGO_TEST_RUN_MAIN=true",
 		"HGRCPATH=",
+		"GOTOOLCHAIN=auto",
+		"newline=\n",
 	}
 
 	if testenv.Builder() != "" || os.Getenv("GIT_TRACE_CURL") == "1" {

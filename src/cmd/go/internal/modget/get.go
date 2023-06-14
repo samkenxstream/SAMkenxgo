@@ -72,6 +72,14 @@ To remove a dependency on a module and downgrade modules that require it:
 
 	go get example.com/mod@none
 
+To upgrade the minimum required Go version to the latest released Go version:
+
+	go get go@latest
+
+To upgrade the Go toolchain to the latest patch release of the current Go toolchain:
+
+	go get toolchain@patch
+
 See https://golang.org/ref/mod#go-get for details.
 
 In earlier versions of Go, 'go get' was used to build and install packages.
@@ -105,6 +113,9 @@ debugging version control commands when a module is downloaded directly
 from a repository.
 
 For more about modules, see https://golang.org/ref/mod.
+
+For more about using 'go get' to update the minimum Go version and
+suggested Go toolchain, see https://go.dev/doc/toolchain.
 
 For more about specifying packages, see 'go help packages'.
 
@@ -333,7 +344,7 @@ func runGet(ctx context.Context, cmd *base.Command, args []string) {
 			// The result of any version query for a given module — even "upgrade" or
 			// "patch" — is always relative to the build list at the start of
 			// the 'go get' command, not an intermediate state, and is therefore
-			// dederministic and therefore cachable, and the constraints on the
+			// deterministic and therefore cachable, and the constraints on the
 			// selected version of each module can only narrow as we iterate.
 			//
 			// "all" is functionally very similar to a wildcard pattern. The set of
@@ -348,7 +359,7 @@ func runGet(ctx context.Context, cmd *base.Command, args []string) {
 
 		// When we load imports, we detect the following conditions:
 		//
-		// - missing transitive depencies that need to be resolved from outside the
+		// - missing transitive dependencies that need to be resolved from outside the
 		//   current build list (note that these may add new matches for existing
 		//   pattern queries!)
 		//
@@ -384,18 +395,23 @@ func runGet(ctx context.Context, cmd *base.Command, args []string) {
 	oldReqs := reqsFromGoMod(modload.ModFile())
 
 	if err := modload.WriteGoMod(ctx, opts); err != nil {
-		if tooNew := (*gover.TooNewError)(nil); errors.As(err, &tooNew) {
-			// This can happen for 'go get go@newversion'
-			// when all the required modules are old enough
-			// but the command line is not.
-			// TODO(bcmills): modload.EditBuildList should catch this instead.
-			toolchain.TryVersion(ctx, tooNew.GoVersion)
-		}
-		base.Fatal(err)
+		// A TooNewError can happen for 'go get go@newversion'
+		// when all the required modules are old enough
+		// but the command line is not.
+		// TODO(bcmills): modload.EditBuildList should catch this instead,
+		// and then this can be changed to base.Fatal(err).
+		toolchain.SwitchOrFatal(ctx, err)
 	}
 
 	newReqs := reqsFromGoMod(modload.ModFile())
 	r.reportChanges(oldReqs, newReqs)
+
+	if gowork := modload.FindGoWork(base.Cwd()); gowork != "" {
+		wf, err := modload.ReadWorkFile(gowork)
+		if err == nil && modload.UpdateWorkGoVersion(wf, modload.MainModules.GoVersion()) {
+			modload.WriteWorkFile(gowork, wf)
+		}
+	}
 }
 
 // parseArgs parses command-line arguments and reports errors.
@@ -492,10 +508,7 @@ func newResolver(ctx context.Context, queries []*query) *resolver {
 	// methods.
 	mg, err := modload.LoadModGraph(ctx, "")
 	if err != nil {
-		if tooNew := (*gover.TooNewError)(nil); errors.As(err, &tooNew) {
-			toolchain.TryVersion(ctx, tooNew.GoVersion)
-		}
-		base.Fatal(err)
+		toolchain.SwitchOrFatal(ctx, err)
 	}
 
 	buildList := mg.BuildList()
@@ -1147,7 +1160,7 @@ func (r *resolver) loadPackages(ctx context.Context, patterns []string, findPack
 		LoadTests:                *getT,
 		AssumeRootsImported:      true, // After 'go get foo', imports of foo should build.
 		SilencePackageErrors:     true, // May be fixed by subsequent upgrades or downgrades.
-		TrySwitchToolchain:       toolchain.TryVersion,
+		Switcher:                 new(toolchain.Switcher),
 	}
 
 	opts.AllowPackage = func(ctx context.Context, path string, m module.Version) error {
@@ -1231,16 +1244,19 @@ func (r *resolver) resolveQueries(ctx context.Context, queries []*query) (change
 
 		// If we found modules that were too new, find the max of the required versions
 		// and then try to switch to a newer toolchain.
-		goVers := ""
+		var sw toolchain.Switcher
 		for _, q := range queries {
 			for _, cs := range q.candidates {
-				if e := (*gover.TooNewError)(nil); errors.As(cs.err, &e) {
-					goVers = gover.Max(goVers, e.GoVersion)
-				}
+				sw.Error(cs.err)
 			}
 		}
-		if goVers != "" {
-			toolchain.TryVersion(ctx, goVers)
+		// Only switch if we need a newer toolchain.
+		// Otherwise leave the cs.err for reporting later.
+		if sw.NeedSwitch() {
+			sw.Switch(ctx)
+			// If NeedSwitch is true and Switch returns, Switch has failed to locate a newer toolchain.
+			// It printed the errors along with one more about not finding a good toolchain.
+			base.Exit()
 		}
 
 		for _, q := range queries {
@@ -1840,9 +1856,8 @@ func (r *resolver) updateBuildList(ctx context.Context, additions []module.Versi
 
 	changed, err := modload.EditBuildList(ctx, additions, resolved)
 	if err != nil {
-		if tooNew := (*gover.TooNewError)(nil); errors.As(err, &tooNew) {
-			toolchain.TryVersion(ctx, tooNew.GoVersion)
-			base.Fatal(err)
+		if errors.Is(err, gover.ErrTooNew) {
+			toolchain.SwitchOrFatal(ctx, err)
 		}
 
 		var constraint *modload.ConstraintError
@@ -1888,10 +1903,7 @@ func (r *resolver) updateBuildList(ctx context.Context, additions []module.Versi
 
 	mg, err := modload.LoadModGraph(ctx, "")
 	if err != nil {
-		if tooNew := (*gover.TooNewError)(nil); errors.As(err, &tooNew) {
-			toolchain.TryVersion(ctx, tooNew.GoVersion)
-		}
-		base.Fatal(err)
+		toolchain.SwitchOrFatal(ctx, err)
 	}
 
 	r.buildList = mg.BuildList()

@@ -6,6 +6,7 @@ package gover
 
 import (
 	"cmd/go/internal/base"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,20 +14,17 @@ import (
 
 // FromToolchain returns the Go version for the named toolchain,
 // derived from the name itself (not by running the toolchain).
-// A toolchain is named "goVERSION" or "anything-goVERSION".
+// A toolchain is named "goVERSION".
 // A suffix after the VERSION introduced by a +, -, space, or tab is removed.
 // Examples:
 //
 //	FromToolchain("go1.2.3") == "1.2.3"
 //	FromToolchain("go1.2.3-bigcorp") == "1.2.3"
-//	FromToolchain("gccgo-go1.23rc4") == "1.23rc4"
 //	FromToolchain("invalid") == ""
 func FromToolchain(name string) string {
 	var v string
 	if strings.HasPrefix(name, "go") {
 		v = name[2:]
-	} else if i := strings.Index(name, "-go"); i >= 0 {
-		v = name[i+3:]
 	} else {
 		return ""
 	}
@@ -83,4 +81,11 @@ var ErrTooNew = errors.New("module too new")
 
 func (e *TooNewError) Is(err error) bool {
 	return err == ErrTooNew
+}
+
+// A Switcher provides the ability to switch to a new toolchain in response to TooNewErrors.
+// See [cmd/go/internal/toolchain.Switcher] for documentation.
+type Switcher interface {
+	Error(err error)
+	Switch(ctx context.Context)
 }
